@@ -1,11 +1,11 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
+import { Upload } from 'lucide-react'
+
 import { useAuth } from '@/auth/use-auth'
-import {
-  Dropzone,
-  DropzoneContent,
-  DropzoneEmptyState,
-} from '@/components/dropzone'
 import { GalleryCard } from '@/components/gallery-card'
+import { GalleryUploadPanel } from '@/components/gallery-upload-panel'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Pagination,
   PaginationContent,
@@ -17,8 +17,8 @@ import {
 } from '@/components/ui/pagination'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useGalleryImages } from '@/hooks/use-gallery-images'
-import { useImageUploadFlow } from '@/hooks/use-image-upload-flow'
 import { useSupabaseUpload } from '@/hooks/use-supabase-upload'
+import { supabase } from '@/lib/client'
 
 function getPageNumbers(current: number, total: number): (number | 'ellipsis')[] {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
@@ -40,43 +40,76 @@ function getPageNumbers(current: number, total: number): (number | 'ellipsis')[]
 export function GalleryPage() {
   const { user } = useAuth()
   const userId = user!.id
+  const [isUploadPanelOpen, setUploadPanelOpen] = useState(false)
+
+  const { images, loading, page, setPage, totalPages, addImage } =
+    useGalleryImages(userId)
+
+  const handleFileUploaded = useCallback(
+    async (filename: string, storagePath: string) => {
+      const { data, error } = await supabase
+        .from('images')
+        .insert({
+          user_id: userId,
+          filename,
+          original_path: storagePath,
+          uploaded_at: new Date().toISOString(),
+        })
+        .select()
+        .single()
+
+      if (error) {
+        console.error('Failed to insert image row:', error)
+        return
+      }
+
+      addImage({ ...data, image_metadata: [] })
+
+      // TODO: Call FastAPI backend to process image (thumbnail + AI analysis)
+      console.log(
+        `[API stub] Would call POST /api/process-image { image_id: ${data.id}, user_id: "${userId}" }`
+      )
+    },
+    [userId, addImage]
+  )
 
   const uploadProps = useSupabaseUpload({
     bucketName: 'gallery',
     path: `${userId}/originals`,
     allowedMimeTypes: ['image/jpeg', 'image/png'],
     maxFiles: 10,
-    maxFileSize: 10 * 1024 * 1024, // 10 MB
+    maxFileSize: 10 * 1024 * 1024,
     upsert: true,
+    onFileUploaded: handleFileUploaded,
   })
 
-  const { images, loading, page, setPage, totalPages, addImage } =
-    useGalleryImages(userId)
+  const { setFiles, setSuccesses, setErrors } = uploadProps
 
   const resetUpload = useCallback(() => {
-    uploadProps.setFiles([])
-    uploadProps.setSuccesses([])
-  }, [uploadProps.setFiles, uploadProps.setSuccesses])
+    setFiles([])
+    setSuccesses([])
+    setErrors([])
+  }, [setFiles, setSuccesses, setErrors])
 
-  useImageUploadFlow({
-    successes: uploadProps.successes,
-    uploadedPaths: uploadProps.uploadedPaths,
-    userId,
-    addImage,
-    resetUpload,
-  })
+  const queuedFileCount = uploadProps.files.length
 
   return (
     <section className="space-y-6">
-      <h1 className="text-2xl font-semibold">Gallery</h1>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold">Gallery</h1>
+          <p className="text-sm text-muted-foreground">
+            Upload, review, and search your AI-tagged images.
+          </p>
+        </div>
 
-      {/* Upload zone */}
-      <Dropzone {...uploadProps}>
-        <DropzoneEmptyState />
-        <DropzoneContent />
-      </Dropzone>
+        <Button onClick={() => setUploadPanelOpen(true)} className="gap-2">
+          <Upload className="size-4" />
+          Upload images
+          {queuedFileCount > 0 && <Badge variant="secondary">{queuedFileCount}</Badge>}
+        </Button>
+      </div>
 
-      {/* Image grid */}
       {loading && images.length === 0 ? (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
@@ -91,7 +124,7 @@ export function GalleryPage() {
         </div>
       ) : images.length === 0 ? (
         <p className="py-12 text-center text-muted-foreground">
-          No images yet. Drop some files above to get started.
+          No images yet. Use Upload images to get started.
         </p>
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
@@ -101,18 +134,13 @@ export function GalleryPage() {
         </div>
       )}
 
-      {/* Pagination */}
       {totalPages > 1 && (
         <Pagination>
           <PaginationContent>
             <PaginationItem>
               <PaginationPrevious
                 onClick={() => setPage(Math.max(1, page - 1))}
-                className={
-                  page <= 1
-                    ? 'pointer-events-none opacity-50'
-                    : 'cursor-pointer'
-                }
+                className={page <= 1 ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
               />
             </PaginationItem>
 
@@ -137,16 +165,19 @@ export function GalleryPage() {
             <PaginationItem>
               <PaginationNext
                 onClick={() => setPage(Math.min(totalPages, page + 1))}
-                className={
-                  page >= totalPages
-                    ? 'pointer-events-none opacity-50'
-                    : 'cursor-pointer'
-                }
+                className={page >= totalPages ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
               />
             </PaginationItem>
           </PaginationContent>
         </Pagination>
       )}
+
+      <GalleryUploadPanel
+        open={isUploadPanelOpen}
+        onOpenChange={setUploadPanelOpen}
+        onReset={resetUpload}
+        uploadProps={uploadProps}
+      />
     </section>
   )
 }
