@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useDropzone, type FileError, type FileRejection } from 'react-dropzone'
 
-import { createClient } from '@/lib/client'
-
-const supabase = createClient()
+import { supabase } from '@/lib/client'
 
 interface FileWithPreview extends File {
   preview?: string
@@ -49,6 +47,10 @@ type UseSupabaseUploadOptions = {
    * When set to false, an error is thrown if the object already exists. Defaults to `false`
    */
   upsert?: boolean
+  /**
+   * Called per file after successful upload to storage.
+   */
+  onFileUploaded?: (filename: string, storagePath: string) => void
 }
 
 type UseSupabaseUploadReturn = ReturnType<typeof useSupabaseUpload>
@@ -62,44 +64,39 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
     maxFiles = 1,
     cacheControl = 3600,
     upsert = false,
+    onFileUploaded,
   } = options
 
   const [files, setFiles] = useState<FileWithPreview[]>([])
-  const [loading, setLoading] = useState<boolean>(false)
+  const [loading, setLoading] = useState(false)
   const [errors, setErrors] = useState<{ name: string; message: string }[]>([])
   const [successes, setSuccesses] = useState<string[]>([])
 
   const isSuccess = useMemo(() => {
-    if (errors.length === 0 && successes.length === 0) {
-      return false
-    }
-    if (errors.length === 0 && successes.length === files.length) {
-      return true
-    }
-    return false
+    return errors.length === 0 && successes.length > 0 && successes.length === files.length
   }, [errors.length, successes.length, files.length])
 
   const onDrop = useCallback(
     (acceptedFiles: File[], fileRejections: FileRejection[]) => {
-      const validFiles = acceptedFiles
-        .filter((file) => !files.find((x) => x.name === file.name))
-        .map((file) => {
+      setFiles((prev) => {
+        const validFiles = acceptedFiles
+          .filter((file) => !prev.find((x) => x.name === file.name))
+          .map((file) => {
+            ;(file as FileWithPreview).preview = URL.createObjectURL(file)
+            ;(file as FileWithPreview).errors = []
+            return file as FileWithPreview
+          })
+
+        const invalidFiles = fileRejections.map(({ file, errors }) => {
           ;(file as FileWithPreview).preview = URL.createObjectURL(file)
-          ;(file as FileWithPreview).errors = []
+          ;(file as FileWithPreview).errors = errors
           return file as FileWithPreview
         })
 
-      const invalidFiles = fileRejections.map(({ file, errors }) => {
-        ;(file as FileWithPreview).preview = URL.createObjectURL(file)
-        ;(file as FileWithPreview).errors = errors
-        return file as FileWithPreview
+        return [...prev, ...validFiles, ...invalidFiles]
       })
-
-      const newFiles = [...files, ...validFiles, ...invalidFiles]
-
-      setFiles(newFiles)
     },
-    [files, setFiles]
+    []
   )
 
   const dropzoneProps = useDropzone({
@@ -107,85 +104,68 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
     noClick: true,
     accept: allowedMimeTypes.reduce((acc, type) => ({ ...acc, [type]: [] }), {}),
     maxSize: maxFileSize,
-    maxFiles: maxFiles,
+    maxFiles,
     multiple: maxFiles !== 1,
   })
 
   const onUpload = useCallback(async () => {
     setLoading(true)
 
-    // [Joshen] This is to support handling partial successes
-    // If any files didn't upload for any reason, hitting "Upload" again will only upload the files that had errors
-    const filesWithErrors = errors.map((x) => x.name)
-    const filesToUpload =
-      filesWithErrors.length > 0
-        ? [
-            ...files.filter((f) => filesWithErrors.includes(f.name)),
-            ...files.filter((f) => !successes.includes(f.name)),
-          ]
-        : files
+    const filesWithErrors = new Set(errors.map((x) => x.name))
+    const successfulFiles = new Set(successes)
+    const filesToUpload = files.filter(
+      (file) =>
+        file.errors.length === 0 &&
+        (filesWithErrors.has(file.name) || !successfulFiles.has(file.name))
+    )
 
-    const responses = await Promise.all(
+    if (filesToUpload.length === 0) {
+      setLoading(false)
+      return
+    }
+
+    const retryNames = new Set(filesToUpload.map((f) => f.name))
+    setErrors((prev) => prev.filter((e) => !retryNames.has(e.name)))
+
+    await Promise.all(
       filesToUpload.map(async (file) => {
-        const { error } = await supabase.storage
-          .from(bucketName)
-          .upload(!!path ? `${path}/${file.name}` : file.name, file, {
-            cacheControl: cacheControl.toString(),
-            upsert,
-          })
+        const ext = file.name.substring(file.name.lastIndexOf('.'))
+        const storageName = `${crypto.randomUUID()}${ext}`
+        const fullPath = path ? `${path}/${storageName}` : storageName
+
+        const { error } = await supabase.storage.from(bucketName).upload(fullPath, file, {
+          cacheControl: cacheControl.toString(),
+          upsert,
+        })
+
         if (error) {
-          return { name: file.name, message: error.message }
+          setErrors((prev) => [
+            ...prev.filter((item) => item.name !== file.name),
+            { name: file.name, message: error.message },
+          ])
         } else {
-          return { name: file.name, message: undefined }
+          setErrors((prev) => prev.filter((item) => item.name !== file.name))
+          setSuccesses((prev) => (prev.includes(file.name) ? prev : [...prev, file.name]))
+          onFileUploaded?.(file.name, fullPath)
         }
       })
     )
-
-    const responseErrors = responses.filter((x) => x.message !== undefined)
-    // if there were errors previously, this function tried to upload the files again so we should clear/overwrite the existing errors.
-    setErrors(responseErrors)
-
-    const responseSuccesses = responses.filter((x) => x.message === undefined)
-    const newSuccesses = Array.from(
-      new Set([...successes, ...responseSuccesses.map((x) => x.name)])
-    )
-    setSuccesses(newSuccesses)
 
     setLoading(false)
-  }, [files, path, bucketName, errors, successes])
-
-  useEffect(() => {
-    if (files.length === 0) {
-      setErrors([])
-    }
-
-    // If the number of files doesn't exceed the maxFiles parameter, remove the error 'Too many files' from each file
-    if (files.length <= maxFiles) {
-      let changed = false
-      const newFiles = files.map((file) => {
-        if (file.errors.some((e) => e.code === 'too-many-files')) {
-          file.errors = file.errors.filter((e) => e.code !== 'too-many-files')
-          changed = true
-        }
-        return file
-      })
-      if (changed) {
-        setFiles(newFiles)
-      }
-    }
-  }, [files.length, setFiles, maxFiles])
+  }, [bucketName, cacheControl, errors, files, onFileUploaded, path, successes, upsert])
 
   return {
     files,
     setFiles,
     successes,
+    setSuccesses,
     isSuccess,
     loading,
     errors,
     setErrors,
     onUpload,
-    maxFileSize: maxFileSize,
-    maxFiles: maxFiles,
+    maxFileSize,
+    maxFiles,
     allowedMimeTypes,
     ...dropzoneProps,
   }
