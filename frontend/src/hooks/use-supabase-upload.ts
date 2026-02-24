@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDropzone, type FileError, type FileRejection } from 'react-dropzone'
 
-import { createClient } from '@/lib/client'
-
-const supabase = createClient()
+import { supabase } from '@/lib/client'
 
 interface FileWithPreview extends File {
   preview?: string
@@ -68,6 +66,8 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
   const [loading, setLoading] = useState<boolean>(false)
   const [errors, setErrors] = useState<{ name: string; message: string }[]>([])
   const [successes, setSuccesses] = useState<string[]>([])
+  // Maps original filename → full storage path (with UUID) for each successful upload
+  const [uploadedPaths, setUploadedPaths] = useState<Record<string, string>>({})
 
   const isSuccess = useMemo(() => {
     if (errors.length === 0 && successes.length === 0) {
@@ -127,16 +127,20 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
 
     const responses = await Promise.all(
       filesToUpload.map(async (file) => {
+        const ext = file.name.substring(file.name.lastIndexOf('.'))
+        const storageName = `${crypto.randomUUID()}${ext}`
+        const fullPath = path ? `${path}/${storageName}` : storageName
+
         const { error } = await supabase.storage
           .from(bucketName)
-          .upload(!!path ? `${path}/${file.name}` : file.name, file, {
+          .upload(fullPath, file, {
             cacheControl: cacheControl.toString(),
             upsert,
           })
         if (error) {
-          return { name: file.name, message: error.message }
+          return { name: file.name, message: error.message, storagePath: '' }
         } else {
-          return { name: file.name, message: undefined }
+          return { name: file.name, message: undefined, storagePath: fullPath }
         }
       })
     )
@@ -151,12 +155,19 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
     )
     setSuccesses(newSuccesses)
 
+    const newPaths = { ...uploadedPaths }
+    for (const s of responseSuccesses) {
+      newPaths[s.name] = s.storagePath
+    }
+    setUploadedPaths(newPaths)
+
     setLoading(false)
-  }, [files, path, bucketName, errors, successes])
+  }, [files, path, bucketName, errors, successes, uploadedPaths])
 
   useEffect(() => {
     if (files.length === 0) {
       setErrors([])
+      setUploadedPaths({})
     }
 
     // If the number of files doesn't exceed the maxFiles parameter, remove the error 'Too many files' from each file
@@ -179,6 +190,8 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
     files,
     setFiles,
     successes,
+    setSuccesses,
+    uploadedPaths,
     isSuccess,
     loading,
     errors,
