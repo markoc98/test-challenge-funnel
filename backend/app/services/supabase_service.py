@@ -110,6 +110,30 @@ class SupabaseService:
         )
         return rows[0] if rows else None
 
+    def list_completed_metadata(self, user_id: str) -> list[ImageMetadataRecord]:
+        return self._execute_typed_rows(
+            self._client.table("image_metadata")
+            .select("id,image_id,user_id,ai_processing_status,tags,description,colors,error_message")
+            .eq("user_id", user_id)
+            .eq("ai_processing_status", "completed"),
+            model=ImageMetadataRecord,
+            context=f"listing completed metadata for user {user_id}",
+        )
+
+    def get_images_by_ids(self, user_id: str, image_ids: list[int]) -> dict[int, ImageRecord]:
+        unique_ids = sorted(set(image_ids))
+        if not unique_ids:
+            return {}
+        rows = self._execute_typed_rows(
+            self._client.table("images")
+            .select("id,user_id,filename,original_path,thumbnail_path")
+            .eq("user_id", user_id)
+            .in_("id", unique_ids),
+            model=ImageRecord,
+            context=f"fetching {len(unique_ids)} image rows for similarity results",
+        )
+        return {row.id: row for row in rows}
+
     def create_metadata(self, payload: MetadataCreatePayload) -> ImageMetadataRecord:
         rows = self._execute_typed_rows(
             self._client.table("image_metadata").insert(payload),

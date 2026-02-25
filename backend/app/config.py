@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = Field(default=10, alias="MAX_UPLOAD_SIZE_MB")
     thumbnail_size: int = Field(default=300, alias="THUMBNAIL_SIZE")
     cors_origins: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
+    similarity_top_k: int = Field(default=10, alias="SIMILARITY_TOP_K", ge=1, le=50)
+    similarity_match_threshold: float = Field(
+        default=0.45,
+        alias="SIMILARITY_MATCH_THRESHOLD",
+        ge=0.0,
+        le=1.0,
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
