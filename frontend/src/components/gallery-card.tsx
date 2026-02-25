@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
+import { Loader2, Search } from 'lucide-react'
 
-import { supabase } from '@/lib/client'
 import {
   Sheet,
   SheetContent,
@@ -9,19 +9,28 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { getSignedUrlCached } from '@/lib/signed-url-cache'
 import type { GalleryImage } from '@/types/gallery'
 
 const ORIGINAL_URL_TTL_SECONDS = 60 * 60
 const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
 
-function GalleryCard({ image }: { image: GalleryImage }) {
+type GalleryCardProps = {
+  image: GalleryImage
+  onFindSimilar?: (image: GalleryImage) => void
+  isFindingSimilar?: boolean
+}
+
+function GalleryCard({ image, onFindSimilar, isFindingSimilar = false }: GalleryCardProps) {
   const [isDetailOpen, setDetailOpen] = useState(false)
   const [originalUrl, setOriginalUrl] = useState<string | null>(null)
   const [isOriginalLoading, setOriginalLoading] = useState(false)
 
   const metadata = image.image_metadata[0] ?? null
   const isProcessing = !metadata || metadata.ai_processing_status !== 'completed'
+  const canFindSimilar = Boolean(onFindSimilar && !isProcessing)
   const thumbnailUrl = image.thumbUrl ?? null
 
   useEffect(() => {
@@ -34,17 +43,19 @@ function GalleryCard({ image }: { image: GalleryImage }) {
     setOriginalLoading(true)
 
     void (async () => {
-      const { data, error } = await supabase.storage
-        .from(GALLERY_BUCKET)
-        .createSignedUrl(originalPath, ORIGINAL_URL_TTL_SECONDS)
+      const signedUrl = await getSignedUrlCached({
+        bucket: GALLERY_BUCKET,
+        path: originalPath,
+        expiresIn: ORIGINAL_URL_TTL_SECONDS,
+      })
 
       if (isCancelled) return
 
-      if (error) {
-        console.error('Failed to sign original image URL:', error)
+      if (!signedUrl) {
+        console.error('Failed to sign original image URL.')
         setOriginalUrl(null)
       } else {
-        setOriginalUrl(data?.signedUrl ?? null)
+        setOriginalUrl(signedUrl)
       }
 
       setOriginalLoading(false)
@@ -140,6 +151,37 @@ function GalleryCard({ image }: { image: GalleryImage }) {
           </div>
 
           <div className="space-y-4 overflow-y-auto pr-1">
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">Similar search</p>
+              <div className="mt-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={!canFindSimilar || isFindingSimilar}
+                  onClick={() => onFindSimilar?.(image)}
+                  className="w-full"
+                >
+                  {isFindingSimilar ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Finding matches...
+                    </>
+                  ) : (
+                    <>
+                      <Search className="size-4" />
+                      Find similar
+                    </>
+                  )}
+                </Button>
+              </div>
+              {!canFindSimilar && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Available after processing is complete.
+                </p>
+              )}
+            </div>
+
             <div className="rounded-lg border p-3">
               <p className="text-xs text-muted-foreground">Status</p>
               <p className="text-sm font-medium">

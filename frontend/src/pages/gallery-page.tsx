@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react'
-import { Upload } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
+import { Upload, X } from 'lucide-react'
 
 import { useAuth } from '@/auth/use-auth'
 import { GalleryCard } from '@/components/gallery-card'
@@ -18,10 +18,73 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { useGalleryImages } from '@/hooks/use-gallery-images'
 import { useSupabaseUpload } from '@/hooks/use-supabase-upload'
+import {
+  findSimilarImages,
+  processImage,
+  type SimilarImageMatch,
+  type SimilarImagesResponse,
+} from '@/lib/api'
 import { supabase } from '@/lib/client'
-import { processImage } from '@/lib/api'
+import { getSignedUrlCached } from '@/lib/signed-url-cache'
+import type { GalleryImage, ImageMetadataRow } from '@/types/gallery'
 
 const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
+const THUMBNAIL_URL_TTL_SECONDS = 60 * 60
+
+type SimilarFilterState = {
+  query: SimilarImagesResponse['query']
+  images: GalleryImage[]
+}
+
+async function createSignedThumbnailUrl(
+  thumbnailPath: string | null
+): Promise<string | null> {
+  if (!thumbnailPath) return null
+
+  const signedUrl = await getSignedUrlCached({
+    bucket: GALLERY_BUCKET,
+    path: thumbnailPath,
+    expiresIn: THUMBNAIL_URL_TTL_SECONDS,
+  })
+  if (!signedUrl) {
+    console.error('Failed to sign thumbnail URL for similar image.')
+  }
+  return signedUrl
+}
+
+function toSyntheticMetadataRow(match: SimilarImageMatch, userId: string): ImageMetadataRow {
+  // Dev note: similarity endpoint returns denormalized metadata, so we synthesize a row for card rendering.
+  return {
+    id: -match.image_id,
+    image_id: match.image_id,
+    user_id: userId,
+    ai_processing_status: 'completed',
+    tags: match.tags,
+    description: match.description,
+    colors: match.colors,
+    error_message: null,
+    created_at: null,
+  }
+}
+
+async function toGalleryImage(
+  match: SimilarImageMatch,
+  userId: string,
+  existingThumbUrl?: string | null
+): Promise<GalleryImage> {
+  const thumbUrl =
+    existingThumbUrl ?? (await createSignedThumbnailUrl(match.thumbnail_path))
+  return {
+    id: match.image_id,
+    user_id: userId,
+    filename: match.filename,
+    original_path: match.original_path,
+    thumbnail_path: match.thumbnail_path,
+    uploaded_at: null,
+    image_metadata: [toSyntheticMetadataRow(match, userId)],
+    thumbUrl,
+  }
+}
 
 function getPageNumbers(current: number, total: number): (number | 'ellipsis')[] {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
@@ -44,9 +107,29 @@ export function GalleryPage() {
   const { user } = useAuth()
   const userId = user!.id
   const [isUploadPanelOpen, setUploadPanelOpen] = useState(false)
+  const [similarFilter, setSimilarFilter] = useState<SimilarFilterState | null>(null)
+  const [similarLoadingImageId, setSimilarLoadingImageId] = useState<number | null>(null)
 
   const { images, loading, page, setPage, totalPages, addImage } =
     useGalleryImages(userId)
+  const isSimilarFilterActive = similarFilter !== null
+
+  const displayedImages = useMemo(
+    () => similarFilter?.images ?? images,
+    [images, similarFilter]
+  )
+  const existingThumbUrlByImageId = useMemo(
+    () => new Map(images.map((item) => [item.id, item.thumbUrl ?? null])),
+    [images]
+  )
+
+  const similarQueryImage = useMemo(() => {
+    if (!similarFilter) return null
+    return images.find((item) => item.id === similarFilter.query.image_id) ?? null
+  }, [images, similarFilter])
+  const similarQueryLabel = similarQueryImage?.filename ?? (
+    similarFilter ? `image #${similarFilter.query.image_id}` : null
+  )
 
   const handleFileUploaded = useCallback(
     async (filename: string, storagePath: string) => {
@@ -81,6 +164,33 @@ export function GalleryPage() {
     [userId, addImage]
   )
 
+  const handleFindSimilar = useCallback(
+    async (image: GalleryImage) => {
+      setSimilarLoadingImageId(image.id)
+      try {
+        const response = await findSimilarImages(image.id)
+        const mappedImages = await Promise.all(
+          response.matches.map((match) =>
+            toGalleryImage(match, userId, existingThumbUrlByImageId.get(match.image_id))
+          )
+        )
+        setSimilarFilter({
+          query: response.query,
+          images: mappedImages,
+        })
+      } catch (error) {
+        console.error('Failed to fetch similar images:', error)
+      } finally {
+        setSimilarLoadingImageId(null)
+      }
+    },
+    [existingThumbUrlByImageId, userId]
+  )
+
+  const clearSimilarFilter = useCallback(() => {
+    setSimilarFilter(null)
+  }, [])
+
   const uploadProps = useSupabaseUpload({
     bucketName: GALLERY_BUCKET,
     path: `${userId}/originals`,
@@ -103,6 +213,30 @@ export function GalleryPage() {
           <p className="text-sm text-muted-foreground">
             Upload, review, and search your AI-tagged images.
           </p>
+          {similarFilter && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <Badge variant="outline" className="gap-1.5">
+                {similarQueryImage?.thumbUrl && (
+                  <img
+                    src={similarQueryImage.thumbUrl}
+                    alt=""
+                    className="size-6 rounded-sm object-cover"
+                    loading="lazy"
+                  />
+                )}
+                <span>Similar matches for {similarQueryLabel}</span>
+              </Badge>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onClick={clearSimilarFilter}
+                aria-label="Clear similar filter"
+              >
+                <X className="size-3" />
+              </Button>
+            </div>
+          )}
         </div>
 
         <Button onClick={() => setUploadPanelOpen(true)} className="gap-2">
@@ -112,7 +246,7 @@ export function GalleryPage() {
         </Button>
       </div>
 
-      {loading && images.length === 0 ? (
+      {loading && !isSimilarFilterActive && images.length === 0 ? (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="overflow-hidden rounded-lg border bg-card">
@@ -124,19 +258,26 @@ export function GalleryPage() {
             </div>
           ))}
         </div>
-      ) : images.length === 0 ? (
+      ) : displayedImages.length === 0 ? (
         <p className="py-12 text-center text-muted-foreground">
-          No images yet. Use Upload images to get started.
+          {isSimilarFilterActive
+            ? 'No similar matches above threshold. Clear the filter to view the full gallery.'
+            : 'No images yet. Use Upload images to get started.'}
         </p>
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-          {images.map((image) => (
-            <GalleryCard key={image.id} image={image} />
+          {displayedImages.map((image) => (
+            <GalleryCard
+              key={image.id}
+              image={image}
+              onFindSimilar={handleFindSimilar}
+              isFindingSimilar={similarLoadingImageId === image.id}
+            />
           ))}
         </div>
       )}
 
-      {totalPages > 1 && (
+      {!isSimilarFilterActive && totalPages > 1 && (
         <Pagination>
           <PaginationContent>
             <PaginationItem>

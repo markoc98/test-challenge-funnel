@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '@/lib/client'
+import { getSignedUrlCached } from '@/lib/signed-url-cache'
 import type { GalleryImage, ImageMetadataRow, ImageRow } from '@/types/gallery'
 
 const PAGE_SIZE = 20
@@ -11,16 +12,15 @@ async function createSignedThumbnailUrl(
 ): Promise<string | null> {
   if (!thumbnailPath) return null
 
-  const { data, error } = await supabase.storage
-    .from(GALLERY_BUCKET)
-    .createSignedUrl(thumbnailPath, THUMBNAIL_URL_TTL_SECONDS)
-
-  if (error) {
-    console.error('Failed to sign thumbnail URL:', error)
-    return null
+  const signedUrl = await getSignedUrlCached({
+    bucket: GALLERY_BUCKET,
+    path: thumbnailPath,
+    expiresIn: THUMBNAIL_URL_TTL_SECONDS,
+  })
+  if (!signedUrl) {
+    console.error('Failed to sign thumbnail URL.')
   }
-
-  return data?.signedUrl ?? null
+  return signedUrl
 }
 
 async function attachThumbnailUrls(images: GalleryImage[]): Promise<GalleryImage[]> {
