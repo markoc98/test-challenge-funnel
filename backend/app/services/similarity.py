@@ -31,6 +31,15 @@ class SimilarityScore:
     description: str
 
 
+@dataclass(frozen=True)
+class ColorSimilarityScore:
+    image_id: int
+    score: float
+    tags: list[str]
+    colors: list[str]
+    description: str
+
+
 class SimilarityService:
     def __init__(
         self,
@@ -255,6 +264,36 @@ class SimilarityService:
 
         scored.sort(key=lambda row: (row.score, row.cosine), reverse=True)
         return query, scored[:top_k]
+
+    def rank_by_color(
+        self,
+        *,
+        query_color: str,
+        candidates: list[SimilarityCandidate],
+        threshold: float,
+        top_k: int,
+    ) -> list[ColorSimilarityScore]:
+        normalized_query_color = query_color.strip().lower()
+        if self._hex_to_hsl(normalized_query_color) is None:
+            raise SimilarityError("Query color must be in #RRGGBB format.")
+
+        scored: list[ColorSimilarityScore] = []
+        for candidate in candidates:
+            color_score = self._color_similarity([normalized_query_color], candidate.colors)
+            if color_score < threshold:
+                continue
+            scored.append(
+                ColorSimilarityScore(
+                    image_id=candidate.image_id,
+                    score=color_score,
+                    tags=candidate.tags,
+                    colors=candidate.colors,
+                    description=candidate.description,
+                )
+            )
+
+        scored.sort(key=lambda row: row.score, reverse=True)
+        return scored[:top_k]
 
 
 @lru_cache

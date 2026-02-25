@@ -42,6 +42,13 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
     )
+    color_match_threshold: float = Field(
+        default=0.75,
+        alias="COLOR_MATCH_THRESHOLD",
+        ge=0.0,
+        le=1.0,
+    )
+    color_search_top_k: int = Field(default=100, alias="COLOR_SEARCH_TOP_K", ge=1, le=500)
 
     model_config = SettingsConfigDict(
         env_file=".env",

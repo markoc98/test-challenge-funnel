@@ -4,6 +4,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from app.config import get_settings
 from app.models.schemas import (
+    ColorSearchMatch,
+    ColorSearchRequest,
+    ColorSearchResponse,
     ProcessImageRequest,
     ProcessImageResponse,
     SimilarImageMatch,
@@ -140,6 +143,67 @@ async def find_similar_images(
             colors=query.colors,
             description=query.description,
         ),
+        match_threshold=threshold,
+        matches=matches,
+    )
+
+
+@router.post("/images/by-color", response_model=ColorSearchResponse)
+async def find_images_by_color(
+    payload: ColorSearchRequest,
+    user_id: UserId,
+    supabase: SupabaseService = Depends(get_supabase),
+    similarity: SimilarityService = Depends(get_similarity),
+) -> ColorSearchResponse:
+    settings = get_settings()
+    threshold = (
+        payload.threshold if payload.threshold is not None else settings.color_match_threshold
+    )
+    top_k = payload.top_k if payload.top_k is not None else settings.color_search_top_k
+
+    metadata_rows = await asyncio.to_thread(
+        supabase.list_completed_metadata,
+        user_id=user_id,
+    )
+    candidates = similarity.from_metadata_rows(metadata_rows)
+
+    try:
+        scored = similarity.rank_by_color(
+            query_color=payload.color_hex,
+            candidates=candidates,
+            threshold=threshold,
+            top_k=top_k,
+        )
+    except SimilarityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    image_lookup = await asyncio.to_thread(
+        supabase.get_images_by_ids,
+        user_id=user_id,
+        image_ids=[row.image_id for row in scored],
+    )
+
+    matches: list[ColorSearchMatch] = []
+    for row in scored:
+        image_row = image_lookup.get(row.image_id)
+        matches.append(
+            ColorSearchMatch(
+                image_id=row.image_id,
+                filename=image_row.filename if image_row else None,
+                original_path=image_row.original_path if image_row else None,
+                thumbnail_path=image_row.thumbnail_path if image_row else None,
+                score=row.score,
+                tags=row.tags,
+                colors=row.colors,
+                description=row.description,
+            )
+        )
+
+    return ColorSearchResponse(
+        query_color=payload.color_hex,
         match_threshold=threshold,
         matches=matches,
     )

@@ -34,6 +34,23 @@ export type SimilarImagesResponse = {
   matches: SimilarImageMatch[]
 }
 
+export type ColorSearchMatch = {
+  image_id: number
+  filename: string | null
+  original_path: string | null
+  thumbnail_path: string | null
+  score: number
+  tags: string[]
+  colors: string[]
+  description: string
+}
+
+export type ColorSearchResponse = {
+  query_color: string
+  match_threshold: number
+  matches: ColorSearchMatch[]
+}
+
 async function getAccessToken(): Promise<string> {
   const { data, error } = await supabase.auth.getSession()
   if (error) throw error
@@ -80,4 +97,11 @@ export async function processImage(imageId: number) {
 
 export async function findSimilarImages(imageId: number) {
   return postJson<SimilarImagesResponse>('/api/images/similar', { image_id: imageId })
+}
+
+export async function findImagesByColor(colorHex: string, threshold?: number) {
+  return postJson<ColorSearchResponse>('/api/images/by-color', {
+    color_hex: colorHex,
+    threshold,
+  })
 }

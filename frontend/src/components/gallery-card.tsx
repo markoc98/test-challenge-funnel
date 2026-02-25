@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { type MouseEvent, useEffect, useState } from 'react'
 import { Loader2, Search } from 'lucide-react'
 
 import {
@@ -20,10 +20,22 @@ const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
 type GalleryCardProps = {
   image: GalleryImage
   onFindSimilar?: (image: GalleryImage) => void
+  onTagClick?: (tag: string) => void
   isFindingSimilar?: boolean
+  onFilterByColor?: (colorHex: string) => void
+  activeColorHex?: string | null
+  isFilteringColorHex?: string | null
 }
 
-function GalleryCard({ image, onFindSimilar, isFindingSimilar = false }: GalleryCardProps) {
+function GalleryCard({
+  image,
+  onFindSimilar,
+  onTagClick,
+  isFindingSimilar = false,
+  onFilterByColor,
+  activeColorHex = null,
+  isFilteringColorHex = null,
+}: GalleryCardProps) {
   const [isDetailOpen, setDetailOpen] = useState(false)
   const [originalUrl, setOriginalUrl] = useState<string | null>(null)
   const [isOriginalLoading, setOriginalLoading] = useState(false)
@@ -31,7 +43,35 @@ function GalleryCard({ image, onFindSimilar, isFindingSimilar = false }: Gallery
   const metadata = image.image_metadata[0] ?? null
   const isProcessing = !metadata || metadata.ai_processing_status !== 'completed'
   const canFindSimilar = Boolean(onFindSimilar && !isProcessing)
+  const canFilterByColor = Boolean(onFilterByColor && !isProcessing)
+  const normalizedActiveColor = activeColorHex?.toUpperCase() ?? null
   const thumbnailUrl = image.thumbUrl ?? null
+
+  const handleColorFilterClick = (colorHex: string) => {
+    if (!onFilterByColor) return
+    setDetailOpen(false)
+    onFilterByColor(colorHex)
+  }
+
+  const handlePreviewColorClick = (
+    event: MouseEvent<HTMLSpanElement>,
+    colorHex: string
+  ) => {
+    event.preventDefault()
+    event.stopPropagation()
+    handleColorFilterClick(colorHex)
+  }
+
+  const handleTagClick = (
+    event: MouseEvent<HTMLButtonElement>,
+    tag: string
+  ) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!onTagClick) return
+    setDetailOpen(false)
+    onTagClick(tag)
+  }
 
   useEffect(() => {
     if (!isDetailOpen || !image.original_path) {
@@ -105,9 +145,19 @@ function GalleryCard({ image, onFindSimilar, isFindingSimilar = false }: Gallery
                 {metadata.tags && metadata.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1">
                     {metadata.tags.slice(0, 4).map((tag) => (
-                      <span key={tag} className="rounded-full bg-muted px-2 py-0.5 text-xs">
+                      <button
+                        key={tag}
+                        type="button"
+                        className={`rounded-full bg-muted px-2 py-0.5 text-xs transition-all duration-150 ${
+                          onTagClick
+                            ? 'cursor-pointer hover:bg-accent hover:text-accent-foreground hover:ring-1 hover:ring-primary/70'
+                            : ''
+                        }`}
+                        title={onTagClick ? `Search by tag "${tag}"` : tag}
+                        onClick={(event) => handleTagClick(event, tag)}
+                      >
                         {tag}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -117,8 +167,12 @@ function GalleryCard({ image, onFindSimilar, isFindingSimilar = false }: Gallery
                     {metadata.colors.map((color) => (
                       <span
                         key={color}
-                        className="h-4 w-4 rounded-full border"
+                        className={`h-4 w-4 rounded-full border transition-transform duration-150 hover:scale-110 hover:ring-2 hover:ring-primary/70 hover:ring-offset-1 hover:ring-offset-background ${
+                          canFilterByColor ? 'cursor-pointer' : ''
+                        }`}
                         style={{ backgroundColor: color }}
+                        title={canFilterByColor ? `Filter by ${color}` : color}
+                        onClick={(event) => handlePreviewColorClick(event, color)}
                       />
                     ))}
                   </div>
@@ -201,9 +255,19 @@ function GalleryCard({ image, onFindSimilar, isFindingSimilar = false }: Gallery
               {metadata?.tags && metadata.tags.length > 0 ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {metadata.tags.map((tag) => (
-                    <span key={tag} className="rounded-full bg-muted px-2 py-0.5 text-xs">
+                    <button
+                      key={tag}
+                      type="button"
+                      className={`rounded-full bg-muted px-2 py-0.5 text-xs transition-all duration-150 ${
+                        onTagClick
+                          ? 'cursor-pointer hover:bg-accent hover:text-accent-foreground hover:ring-1 hover:ring-primary/70'
+                          : ''
+                      }`}
+                      title={onTagClick ? `Search by tag "${tag}"` : tag}
+                      onClick={(event) => handleTagClick(event, tag)}
+                    >
                       {tag}
-                    </span>
+                    </button>
                   ))}
                 </div>
               ) : (
@@ -216,16 +280,33 @@ function GalleryCard({ image, onFindSimilar, isFindingSimilar = false }: Gallery
               {metadata?.colors && metadata.colors.length > 0 ? (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {metadata.colors.map((color) => (
-                    <span
+                    <button
+                      type="button"
                       key={color}
-                      className="h-6 w-6 rounded-full border"
+                      className={`h-6 w-6 cursor-pointer rounded-full border shadow-sm transition-transform duration-150 hover:scale-110 hover:ring-2 hover:ring-primary/70 hover:ring-offset-2 hover:ring-offset-background focus-visible:scale-110 focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100 disabled:hover:ring-0 ${
+                        normalizedActiveColor === color.toUpperCase()
+                          ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
+                          : ''
+                      }`}
                       style={{ backgroundColor: color }}
-                      title={color}
+                      title={
+                        canFilterByColor
+                          ? `Filter by ${color}`
+                          : color
+                      }
+                      aria-label={`Filter images by color ${color}`}
+                      disabled={!canFilterByColor || Boolean(isFilteringColorHex)}
+                      onClick={() => handleColorFilterClick(color)}
                     />
                   ))}
                 </div>
               ) : (
                 <p className="mt-1 text-sm">No color palette available yet.</p>
+              )}
+              {canFilterByColor && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Click a color to filter similar-colored images.
+                </p>
               )}
             </div>
           </div>
