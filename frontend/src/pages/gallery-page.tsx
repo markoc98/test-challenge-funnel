@@ -1,11 +1,12 @@
-import { useCallback, useMemo, useState } from 'react'
-import { Upload, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Loader2, Search, Upload, X } from 'lucide-react'
 
 import { useAuth } from '@/auth/use-auth'
 import { GalleryCard } from '@/components/gallery-card'
 import { GalleryUploadPanel } from '@/components/gallery-upload-panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Pagination,
   PaginationContent,
@@ -30,10 +31,15 @@ import type { GalleryImage, ImageMetadataRow } from '@/types/gallery'
 
 const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
 const THUMBNAIL_URL_TTL_SECONDS = 60 * 60
+const SEARCH_DEBOUNCE_MS = 300
 
 type SimilarFilterState = {
   query: SimilarImagesResponse['query']
   images: GalleryImage[]
+}
+
+type ImageMetadataSearchRow = {
+  image_id: number | null
 }
 
 async function createSignedThumbnailUrl(
@@ -47,7 +53,7 @@ async function createSignedThumbnailUrl(
     expiresIn: THUMBNAIL_URL_TTL_SECONDS,
   })
   if (!signedUrl) {
-    console.error('Failed to sign thumbnail URL for similar image.')
+    console.error('Failed to sign thumbnail URL.')
   }
   return signedUrl
 }
@@ -103,25 +109,47 @@ function getPageNumbers(current: number, total: number): (number | 'ellipsis')[]
   return pages
 }
 
+function normalizeSearchQuery(value: string): string {
+  return value.trim().replace(/\s+/g, ' ')
+}
+
+function toTagSearchTerms(query: string): string[] {
+  return Array.from(
+    new Set(
+      query
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean)
+    )
+  )
+}
+
 export function GalleryPage() {
   const { user } = useAuth()
   const userId = user!.id
   const [isUploadPanelOpen, setUploadPanelOpen] = useState(false)
   const [similarFilter, setSimilarFilter] = useState<SimilarFilterState | null>(null)
   const [similarLoadingImageId, setSimilarLoadingImageId] = useState<number | null>(null)
+  const [searchInput, setSearchInput] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<GalleryImage[]>([])
+  const [isSearchLoading, setSearchLoading] = useState(false)
+  const searchRequestIdRef = useRef(0)
 
   const { images, loading, page, setPage, totalPages, addImage } =
     useGalleryImages(userId)
+  const isTextSearchActive = searchQuery.length > 0
   const isSimilarFilterActive = similarFilter !== null
 
-  const displayedImages = useMemo(
-    () => similarFilter?.images ?? images,
-    [images, similarFilter]
-  )
   const existingThumbUrlByImageId = useMemo(
     () => new Map(images.map((item) => [item.id, item.thumbUrl ?? null])),
     [images]
   )
+  const displayedImages = useMemo(() => {
+    if (similarFilter) return similarFilter.images
+    if (isTextSearchActive) return searchResults
+    return images
+  }, [images, isTextSearchActive, searchResults, similarFilter])
 
   const similarQueryImage = useMemo(() => {
     if (!similarFilter) return null
@@ -130,6 +158,113 @@ export function GalleryPage() {
   const similarQueryLabel = similarQueryImage?.filename ?? (
     similarFilter ? `image #${similarFilter.query.image_id}` : null
   )
+
+  useEffect(() => {
+    const normalizedQuery = normalizeSearchQuery(searchInput)
+
+    if (!normalizedQuery) {
+      searchRequestIdRef.current += 1
+      setSearchQuery('')
+      setSearchResults([])
+      setSearchLoading(false)
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      const requestId = searchRequestIdRef.current + 1
+      searchRequestIdRef.current = requestId
+
+      setSimilarFilter(null)
+      setSearchQuery(normalizedQuery)
+      setSearchLoading(true)
+
+      void (async () => {
+        try {
+          const tagTerms = toTagSearchTerms(normalizedQuery)
+
+          const [descriptionResult, tagsResult] = await Promise.all([
+            supabase
+              .from('image_metadata')
+              .select('image_id')
+              .eq('user_id', userId)
+              .not('image_id', 'is', null)
+              .textSearch('description', normalizedQuery, {
+                type: 'websearch',
+                config: 'english',
+              }),
+            supabase
+              .from('image_metadata')
+              .select('image_id')
+              .eq('user_id', userId)
+              .not('image_id', 'is', null)
+              .overlaps('tags', tagTerms),
+          ])
+
+          if (searchRequestIdRef.current !== requestId) return
+
+          if (descriptionResult.error || tagsResult.error) {
+            console.error('Failed to run text search:', descriptionResult.error, tagsResult.error)
+            setSearchResults([])
+            return
+          }
+
+          const imageIds = new Set<number>()
+          const metadataRows = [
+            ...((descriptionResult.data as ImageMetadataSearchRow[] | null) ?? []),
+            ...((tagsResult.data as ImageMetadataSearchRow[] | null) ?? []),
+          ]
+          for (const row of metadataRows) {
+            if (typeof row.image_id === 'number') imageIds.add(row.image_id)
+          }
+
+          if (imageIds.size === 0) {
+            setSearchResults([])
+            return
+          }
+
+          const { data: matchedImages, error: matchedImagesError } = await supabase
+            .from('images')
+            .select('*, image_metadata(*)')
+            .eq('user_id', userId)
+            .in('id', Array.from(imageIds))
+            .order('uploaded_at', { ascending: false })
+
+          if (searchRequestIdRef.current !== requestId) return
+
+          if (matchedImagesError) {
+            console.error('Failed to fetch text search matches:', matchedImagesError)
+            setSearchResults([])
+            return
+          }
+
+          const resultsWithSignedThumbs = await Promise.all(
+            ((matchedImages as GalleryImage[] | null) ?? []).map(async (image) => ({
+              ...image,
+              thumbUrl:
+                existingThumbUrlByImageId.get(image.id) ??
+                (await createSignedThumbnailUrl(image.thumbnail_path)),
+            }))
+          )
+
+          if (searchRequestIdRef.current !== requestId) return
+
+          setSearchResults(resultsWithSignedThumbs)
+        } catch (error) {
+          if (searchRequestIdRef.current !== requestId) return
+          console.error('Failed to search images:', error)
+          setSearchResults([])
+        } finally {
+          if (searchRequestIdRef.current === requestId) {
+            setSearchLoading(false)
+          }
+        }
+      })()
+    }, SEARCH_DEBOUNCE_MS)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [existingThumbUrlByImageId, searchInput, userId])
 
   const handleFileUploaded = useCallback(
     async (filename: string, storagePath: string) => {
@@ -213,6 +348,46 @@ export function GalleryPage() {
           <p className="text-sm text-muted-foreground">
             Upload, review, and search your AI-tagged images.
           </p>
+          <div className="flex w-full max-w-md items-center gap-2 pt-2">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="search"
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+                placeholder="Search description and tags"
+                className="pl-8"
+                aria-label="Search images by description and tags"
+              />
+            </div>
+            {searchInput.trim().length > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setSearchInput('')}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+          {isTextSearchActive && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <Badge variant="outline" className="gap-1.5">
+                {isSearchLoading ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                <span>Text matches for "{searchQuery}"</span>
+              </Badge>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => setSearchInput('')}
+                aria-label="Clear text search"
+              >
+                <X className="size-3" />
+              </Button>
+            </div>
+          )}
           {similarFilter && (
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <Badge variant="outline" className="gap-1.5">
@@ -246,7 +421,8 @@ export function GalleryPage() {
         </Button>
       </div>
 
-      {loading && !isSimilarFilterActive && images.length === 0 ? (
+      {((loading && !isSimilarFilterActive && !isTextSearchActive && images.length === 0) ||
+        (isTextSearchActive && isSearchLoading && displayedImages.length === 0)) ? (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="overflow-hidden rounded-lg border bg-card">
@@ -262,6 +438,8 @@ export function GalleryPage() {
         <p className="py-12 text-center text-muted-foreground">
           {isSimilarFilterActive
             ? 'No similar matches above threshold. Clear the filter to view the full gallery.'
+            : isTextSearchActive
+              ? `No text matches for "${searchQuery}".`
             : 'No images yet. Use Upload images to get started.'}
         </p>
       ) : (
@@ -277,7 +455,7 @@ export function GalleryPage() {
         </div>
       )}
 
-      {!isSimilarFilterActive && totalPages > 1 && (
+      {!isSimilarFilterActive && !isTextSearchActive && totalPages > 1 && (
         <Pagination>
           <PaginationContent>
             <PaginationItem>
