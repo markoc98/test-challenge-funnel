@@ -19,6 +19,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useGalleryImages } from '@/hooks/use-gallery-images'
 import { useSupabaseUpload } from '@/hooks/use-supabase-upload'
 import { supabase } from '@/lib/client'
+import { processImage } from '@/lib/api'
 
 function getPageNumbers(current: number, total: number): (number | 'ellipsis')[] {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
@@ -64,11 +65,10 @@ export function GalleryPage() {
       }
 
       addImage({ ...data, image_metadata: [] })
+      void processImage(data.id).catch((processError) => {
+        console.error('Failed to process image:', processError)
+      })
 
-      // TODO: Call FastAPI backend to process image (thumbnail + AI analysis)
-      console.log(
-        `[API stub] Would call POST /api/process-image { image_id: ${data.id}, user_id: "${userId}" }`
-      )
     },
     [userId, addImage]
   )

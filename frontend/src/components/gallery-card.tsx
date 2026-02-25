@@ -1,17 +1,11 @@
 import { Skeleton } from '@/components/ui/skeleton'
-import { supabase } from '@/lib/client'
 import type { GalleryImage } from '@/types/gallery'
 
 function GalleryCard({ image }: { image: GalleryImage }) {
   const metadata = image.image_metadata[0] ?? null
   const isProcessing =
     !metadata || metadata.ai_processing_status !== 'completed'
-  const hasThumbnail = !!image.thumbnail_path
-
-  const thumbnailUrl = hasThumbnail
-    ? supabase.storage.from('gallery').getPublicUrl(image.thumbnail_path!)
-        .data.publicUrl
-    : null
+  const thumbnailUrl = image.thumbUrl ?? null
 
   return (
     <div className="overflow-hidden rounded-lg border bg-card shadow-sm">

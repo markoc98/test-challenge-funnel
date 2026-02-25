@@ -1,9 +1,22 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+import { supabase } from '@/lib/client'
 
-export async function processImage(imageId: number, userId: string) {
-  // TODO: Call FastAPI backend to process the image (thumbnail generation + AI analysis)
-  console.log(`[API stub] POST ${API_BASE_URL}/api/process-image`, {
-    image_id: imageId,
-    user_id: userId,
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+
+export async function processImage(imageId: number) {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  const token = data.session?.access_token
+  if (!token) throw new Error("Not authenticated");
+
+  const response = await fetch(`${API_BASE_URL}/api/process-image`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+    },
+    body: JSON.stringify({ image_id: imageId }),
   })
+
+  if (!response.ok) throw new Error(await response.text())
+  return response.json()
 }
