@@ -21,7 +21,7 @@ class OpenAIImageAnalyzer:
         prompt = (
             "Analyze this image and return only valid JSON with this exact schema: "
             '{"tags": ["tag-one", "tag-two"], "description": "One-sentence description."}. '
-            "Rules: 3-8 concise lowercase tags, no hashtags, no punctuation in tags, "
+            'Rules: 5-10 concise lowercase tags, include both specific and general tags where relevant (e.g. both "golden retriever" and "dog"), no hashtags, no punctuation in tags, '
             "description max 25 words."
         )
 
@@ -29,7 +29,7 @@ class OpenAIImageAnalyzer:
             response = await self._client.responses.create(
                 model=self._model,
                 temperature=0.2,
-                max_output_tokens=200,
+                max_output_tokens=300,
                 input=[
                     {
                         "role": "user",
@@ -66,7 +66,7 @@ class OpenAIImageAnalyzer:
         clean_tags = [tag.strip().lower() for tag in tags if tag.strip()]
         deduped_tags = list(dict.fromkeys(clean_tags))
 
-        return ImageAnalysis(tags=deduped_tags[:8], description=description.strip())
+        return ImageAnalysis(tags=deduped_tags[:10], description=description.strip())
 
 
 def _parse_json_output(text: str) -> dict:
