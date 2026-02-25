@@ -5,7 +5,7 @@ import mimetypes
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
-from supabase import Client, create_client
+from supabase import Client, ClientOptions, create_client
 
 from app.config import get_settings
 from app.models.db import (
@@ -24,10 +24,22 @@ class SupabaseError(Exception):
 
 
 class SupabaseService:
-    def __init__(self, base_url: str, secret_key: str, bucket: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        secret_key: str,
+        bucket: str,
+        *,
+        postgrest_timeout_seconds: int,
+        storage_timeout_seconds: int,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._bucket = bucket
-        self._client: Client = create_client(self._base_url, secret_key)
+        options = ClientOptions(
+            postgrest_client_timeout=postgrest_timeout_seconds,
+            storage_client_timeout=storage_timeout_seconds,
+        )
+        self._client: Client = create_client(self._base_url, secret_key, options)
 
     @staticmethod
     def _rows(response: Any) -> list[dict[str, Any]]:
@@ -233,7 +245,7 @@ class SupabaseService:
         self,
         object_path: str,
         *,
-        expires_in: int = 60,
+        expires_in: int = 300,
         download: bool = True,
     ) -> str:
         cleaned_path = self._clean_path(object_path)
@@ -281,4 +293,6 @@ def get_supabase_service() -> SupabaseService:
         base_url=settings.supabase_url,
         secret_key=settings.supabase_secret_key,
         bucket=settings.supabase_storage_bucket,
+        postgrest_timeout_seconds=settings.supabase_postgrest_timeout_seconds,
+        storage_timeout_seconds=settings.supabase_storage_timeout_seconds,
     )

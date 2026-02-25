@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from app.config import get_settings
@@ -45,7 +47,11 @@ async def process_image(
             detail="Invalid payload.",
         )
 
-    image = supabase.get_image(image_id=payload.image_id, user_id=user_id)
+    image = await asyncio.to_thread(
+        supabase.get_image,
+        image_id=payload.image_id,
+        user_id=user_id,
+    )
     if not image:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -66,14 +72,21 @@ async def find_similar_images(
 ) -> SimilarImagesResponse:
     settings = get_settings()
 
-    image = supabase.get_image(image_id=payload.image_id, user_id=user_id)
+    image = await asyncio.to_thread(
+        supabase.get_image,
+        image_id=payload.image_id,
+        user_id=user_id,
+    )
     if not image:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Image not found.",
         )
 
-    metadata_rows = supabase.list_completed_metadata(user_id=user_id)
+    metadata_rows = await asyncio.to_thread(
+        supabase.list_completed_metadata,
+        user_id=user_id,
+    )
     candidates = similarity.from_metadata_rows(metadata_rows)
 
     try:
@@ -88,7 +101,8 @@ async def find_similar_images(
             detail="Image metadata is not ready for similarity search.",
         ) from exc
 
-    image_lookup = supabase.get_images_by_ids(
+    image_lookup = await asyncio.to_thread(
+        supabase.get_images_by_ids,
         user_id=user_id,
         image_ids=[row.image_id for row in scored],
     )

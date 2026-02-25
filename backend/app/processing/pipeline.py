@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from app.models.db import ImageRecord
@@ -25,28 +26,62 @@ async def process_image_job(
         if not original_path or not original_path.strip():
             raise RuntimeError("Image original_path is missing.")
 
-        image_url = supabase.create_signed_url(original_path, download=False)
-        image_bytes, _ = supabase.download_bytes(original_path)
+        image_bytes, _ = await asyncio.to_thread(
+            supabase.download_bytes,
+            original_path,
+        )
 
-        thumbnail_bytes = create_thumbnail(image_bytes=image_bytes)
+        thumbnail_bytes = await asyncio.to_thread(
+            create_thumbnail,
+            image_bytes=image_bytes,
+        )
         thumbnail_path = _thumbnail_path(user_id=user_id, image_id=image_id, original_path=original_path)
-        supabase.upload_object(
+        await asyncio.to_thread(
+            supabase.upload_object,
             object_path=thumbnail_path,
             payload=thumbnail_bytes,
             content_type="image/jpeg",
             upsert=True,
         )
-        supabase.update_image(
+        await asyncio.to_thread(
+            supabase.update_image,
             image_id=image_id,
             user_id=user_id,
             payload={"thumbnail_path": thumbnail_path},
         )
 
         analyzer = get_image_analyzer()
-        analysis = await analyzer.analyze(image_url=image_url)
-        colors = extract_dominant_colors(image_bytes=image_bytes, limit=3)
+        image_url = await asyncio.to_thread(
+            supabase.create_signed_url,
+            original_path,
+            expires_in=300,
+            download=False,
+        )
+        try:
+            analysis = await analyzer.analyze(image_url=image_url)
+        except AnalyzerError as exc:
+            if not exc.retryable_url_error:
+                raise
+            logger.warning(
+                "Retrying image analysis with refreshed signed URL for image_id=%s user_id=%s",
+                image_id,
+                user_id,
+            )
+            refreshed_image_url = await asyncio.to_thread(
+                supabase.create_signed_url,
+                original_path,
+                expires_in=300,
+                download=False,
+            )
+            analysis = await analyzer.analyze(image_url=refreshed_image_url)
+        colors = await asyncio.to_thread(
+            extract_dominant_colors,
+            image_bytes=image_bytes,
+            limit=3,
+        )
 
-        supabase.upsert_metadata(
+        await asyncio.to_thread(
+            supabase.upsert_metadata,
             image_id=image_id,
             user_id=user_id,
             payload={
@@ -60,7 +95,8 @@ async def process_image_job(
     except (AnalyzerError, SupabaseError, RuntimeError) as exc:
         logger.exception("Image processing failed for image_id=%s user_id=%s", image_id, user_id)
         try:
-            supabase.upsert_metadata(
+            await asyncio.to_thread(
+                supabase.upsert_metadata,
                 image_id=image_id,
                 user_id=user_id,
                 payload={
@@ -81,7 +117,8 @@ async def process_image_job(
             user_id,
         )
         try:
-            supabase.upsert_metadata(
+            await asyncio.to_thread(
+                supabase.upsert_metadata,
                 image_id=image_id,
                 user_id=user_id,
                 payload={

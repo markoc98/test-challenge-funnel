@@ -14,9 +14,23 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    openai_timeout_seconds: int = Field(default=45, alias="OPENAI_TIMEOUT_SECONDS", ge=5, le=300)
 
     google_api_key: str | None = Field(default=None, alias="GOOGLE_API_KEY")
     google_model: str = Field(default="gemini-2.5-flash", alias="GOOGLE_MODEL")
+
+    supabase_postgrest_timeout_seconds: int = Field(
+        default=30,
+        alias="SUPABASE_POSTGREST_TIMEOUT_SECONDS",
+        ge=5,
+        le=300,
+    )
+    supabase_storage_timeout_seconds: int = Field(
+        default=30,
+        alias="SUPABASE_STORAGE_TIMEOUT_SECONDS",
+        ge=5,
+        le=300,
+    )
 
     max_upload_size_mb: int = Field(default=10, alias="MAX_UPLOAD_SIZE_MB")
     thumbnail_size: int = Field(default=300, alias="THUMBNAIL_SIZE")

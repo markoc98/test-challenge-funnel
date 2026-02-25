@@ -11,10 +11,30 @@ from app.models.schemas import ImageAnalysis
 class AnalyzerError(Exception):
     """Raised when AI analysis fails."""
 
+    def __init__(self, message: str, *, retryable_url_error: bool = False) -> None:
+        super().__init__(message)
+        self.retryable_url_error = retryable_url_error
+
+
+def _is_retryable_url_download_error(error_text: str) -> bool:
+    normalized = error_text.lower()
+    has_url_param = (
+        "param': 'url'" in normalized
+        or '"param": "url"' in normalized
+        or "param=url" in normalized
+    )
+    return "error while downloading" in normalized and (
+        has_url_param or "invalid_value" in normalized
+    )
+
 
 class OpenAIImageAnalyzer:
-    def __init__(self, api_key: str, model: str) -> None:
-        self._client = AsyncOpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str, timeout_seconds: int) -> None:
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            timeout=float(timeout_seconds),
+            max_retries=1,
+        )
         self._model = model
 
     async def analyze(self, image_url: str) -> ImageAnalysis:
@@ -41,7 +61,11 @@ class OpenAIImageAnalyzer:
                 ],
             )
         except Exception as exc:  # noqa: BLE001
-            print(exc)
+            if _is_retryable_url_download_error(str(exc)):
+                raise AnalyzerError(
+                    "OpenAI could not download the provided image URL.",
+                    retryable_url_error=True,
+                ) from exc
             raise AnalyzerError("OpenAI request failed.") from exc
         output_text = (response.output_text or "").strip()
         if not output_text:
@@ -82,4 +106,8 @@ def get_image_analyzer() -> OpenAIImageAnalyzer:
     settings = get_settings()
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not set.")
-    return OpenAIImageAnalyzer(api_key=settings.openai_api_key, model=settings.openai_model)
+    return OpenAIImageAnalyzer(
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        timeout_seconds=settings.openai_timeout_seconds,
+    )
