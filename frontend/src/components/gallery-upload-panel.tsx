@@ -69,7 +69,7 @@ function GalleryUploadPanel({
               Upload images
             </DrawerTitle>
             <DrawerDescription>
-              Drag and drop JPEG or PNG files.
+              Drag and drop JPEG or PNG files with per-file progress tracking.
             </DrawerDescription>
           </DrawerHeader>
           {content}
@@ -87,7 +87,7 @@ function GalleryUploadPanel({
             Upload images
           </SheetTitle>
           <SheetDescription>
-            Drag and drop JPEG or PNG files.
+            Drag and drop JPEG or PNG files with per-file progress tracking.
           </SheetDescription>
         </SheetHeader>
         {content}

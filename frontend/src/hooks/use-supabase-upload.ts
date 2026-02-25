@@ -1,11 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDropzone, type FileError, type FileRejection } from 'react-dropzone'
+import { Upload, type PreviousUpload } from 'tus-js-client'
 
 import { supabase } from '@/lib/client'
 
 interface FileWithPreview extends File {
   preview?: string
   errors: readonly FileError[]
+}
+
+type UploadFileStatus = 'queued' | 'uploading' | 'finalizing' | 'success' | 'error'
+
+type FileUploadProgress = {
+  status: UploadFileStatus
+  progress: number
+  uploadedBytes: number
+  totalBytes: number
 }
 
 type UseSupabaseUploadOptions = {
@@ -56,6 +66,42 @@ type UseSupabaseUploadOptions = {
 
 type UseSupabaseUploadReturn = ReturnType<typeof useSupabaseUpload>
 
+function toStorageEndpoint(baseUrl: string): string {
+  const url = new URL(baseUrl)
+  if (url.hostname.endsWith('.supabase.co')) {
+    url.hostname = url.hostname.replace(/\.supabase\.co$/i, '.storage.supabase.co')
+  }
+  url.pathname = '/storage/v1/upload/resumable'
+  url.search = ''
+  url.hash = ''
+  return url.toString()
+}
+
+function getTusErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return 'Failed to upload file'
+  }
+
+  const originalResponse = (
+    error as Error & {
+      originalResponse?: {
+        getBody?: () => string
+      }
+    }
+  ).originalResponse
+  const body = originalResponse?.getBody?.()
+  if (!body) {
+    return error.message || 'Failed to upload file'
+  }
+
+  try {
+    const parsed = JSON.parse(body) as { error?: string; message?: string }
+    return parsed.error ?? parsed.message ?? error.message
+  } catch {
+    return body
+  }
+}
+
 const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
   const {
     bucketName,
@@ -72,6 +118,7 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
   const [loading, setLoading] = useState(false)
   const [errors, setErrors] = useState<{ name: string; message: string }[]>([])
   const [successes, setSuccesses] = useState<string[]>([])
+  const [progressByFile, setProgressByFile] = useState<Record<string, FileUploadProgress>>({})
   const filesRef = useRef<FileWithPreview[]>([])
 
   const revokePreview = useCallback((file: FileWithPreview) => {
@@ -111,10 +158,28 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
           return file as FileWithPreview
         })
 
-        return [...prev, ...validFiles, ...invalidFiles]
+        const nextFiles = [...prev, ...validFiles, ...invalidFiles]
+        const addedFiles = [...validFiles, ...invalidFiles]
+        if (addedFiles.length > 0) {
+          setProgressByFile((prevProgress) => {
+            const nextProgress = { ...prevProgress }
+            for (const file of addedFiles) {
+              const key = file.name
+              nextProgress[key] = {
+                status: file.errors.length > 0 ? 'error' : 'queued',
+                progress: 0,
+                uploadedBytes: 0,
+                totalBytes: file.size,
+              }
+            }
+            return nextProgress
+          })
+        }
+
+        return nextFiles
       })
     },
-    [setFiles]
+    [setFiles, setProgressByFile]
   )
 
   const dropzoneProps = useDropzone({
@@ -125,6 +190,72 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
     maxFiles,
     multiple: maxFiles !== 1,
   })
+
+  const uploadFileWithProgress = useCallback(
+    async (
+      file: File,
+      fullPath: string,
+      onProgress: (uploadedBytes: number, totalBytes: number) => void
+    ) => {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+      const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+      if (!supabaseUrl || !publishableKey) {
+        throw new Error('Supabase URL or publishable key is not configured')
+      }
+
+      const { data, error } = await supabase.auth.getSession()
+      if (error) throw error
+
+      const accessToken = data.session?.access_token
+      if (!accessToken) {
+        throw new Error('Not authenticated')
+      }
+
+      const endpoint = toStorageEndpoint(supabaseUrl)
+      await new Promise<void>((resolve, reject) => {
+        const upload = new Upload(file, {
+          endpoint,
+          retryDelays: [0, 3000, 5000, 10000, 20000],
+          headers: {
+            authorization: `Bearer ${accessToken}`,
+            apikey: publishableKey,
+            'x-upsert': upsert ? 'true' : 'false',
+          },
+          uploadDataDuringCreation: true,
+          removeFingerprintOnSuccess: true,
+          metadata: {
+            bucketName,
+            objectName: fullPath,
+            contentType: file.type || 'application/octet-stream',
+            cacheControl: cacheControl.toString(),
+          },
+          chunkSize: 6 * 1024 * 1024,
+          onError(error: unknown) {
+            reject(new Error(getTusErrorMessage(error)))
+          },
+          onProgress(bytesUploaded: number, bytesTotal: number) {
+            onProgress(bytesUploaded, bytesTotal)
+          },
+          onSuccess() {
+            resolve()
+          },
+        })
+
+        void upload
+          .findPreviousUploads()
+          .then((previousUploads: PreviousUpload[]) => {
+            if (previousUploads.length > 0) {
+              upload.resumeFromPreviousUpload(previousUploads[0])
+            }
+            upload.start()
+          })
+          .catch((error: unknown) => {
+            reject(new Error(getTusErrorMessage(error)))
+          })
+      })
+    },
+    [bucketName, cacheControl, upsert]
+  )
 
   const onUpload = useCallback(async () => {
     setLoading(true)
@@ -142,50 +273,102 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
       return
     }
 
+    setProgressByFile((prev) => {
+      const next = { ...prev }
+      for (const file of filesToUpload) {
+        const key = file.name
+        next[key] = {
+          status: 'uploading',
+          progress: 0,
+          uploadedBytes: 0,
+          totalBytes: file.size,
+        }
+      }
+      return next
+    })
+
     const retryNames = new Set(filesToUpload.map((f) => f.name))
     setErrors((prev) => prev.filter((e) => !retryNames.has(e.name)))
 
     await Promise.all(
       filesToUpload.map(async (file) => {
-        const ext = file.name.substring(file.name.lastIndexOf('.'))
+        const extIndex = file.name.lastIndexOf('.')
+        const ext = extIndex >= 0 ? file.name.slice(extIndex) : ''
         const storageName = `${crypto.randomUUID()}${ext}`
         const fullPath = path ? `${path}/${storageName}` : storageName
 
         try {
-          const { error } = await supabase.storage.from(bucketName).upload(fullPath, file, {
-            cacheControl: cacheControl.toString(),
-            upsert,
+          await uploadFileWithProgress(file, fullPath, (uploadedBytes, totalBytes) => {
+            const key = file.name
+            const progress =
+              totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)) : 0
+            setProgressByFile((prev) => ({
+              ...prev,
+              [key]: {
+                status: 'uploading',
+                progress,
+                uploadedBytes,
+                totalBytes,
+              },
+            }))
           })
-          if (error) throw error
+          const key = file.name
+          setProgressByFile((prev) => ({
+            ...prev,
+            [key]: {
+              status: 'finalizing',
+              progress: 100,
+              uploadedBytes: file.size,
+              totalBytes: file.size,
+            },
+          }))
 
           await onFileUploaded?.(file.name, fullPath)
 
           setErrors((prev) => prev.filter((item) => item.name !== file.name))
           setSuccesses((prev) => (prev.includes(file.name) ? prev : [...prev, file.name]))
+          setProgressByFile((prev) => ({
+            ...prev,
+            [key]: {
+              status: 'success',
+              progress: 100,
+              uploadedBytes: file.size,
+              totalBytes: file.size,
+            },
+          }))
         } catch (uploadError: unknown) {
+          const key = file.name
           const message =
             uploadError instanceof Error ? uploadError.message : 'Failed to upload file'
           setErrors((prev) => [
             ...prev.filter((item) => item.name !== file.name),
             { name: file.name, message },
           ])
+          setProgressByFile((prev) => ({
+            ...prev,
+            [key]: {
+              status: 'error',
+              progress: prev[key]?.progress ?? 0,
+              uploadedBytes: prev[key]?.uploadedBytes ?? 0,
+              totalBytes: file.size,
+            },
+          }))
         }
       })
     )
 
     setLoading(false)
   }, [
-    bucketName,
-    cacheControl,
     errors,
     files,
     onFileUploaded,
     path,
     setErrors,
     setLoading,
+    setProgressByFile,
     setSuccesses,
     successes,
-    upsert,
+    uploadFileWithProgress,
   ])
 
   const removeFile = useCallback(
@@ -197,10 +380,15 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
         }
         return prev.filter((file) => file.name !== fileName)
       })
+      setProgressByFile((prev) => {
+        const next = { ...prev }
+        delete next[fileName]
+        return next
+      })
       setErrors((prev) => prev.filter((item) => item.name !== fileName))
       setSuccesses((prev) => prev.filter((name) => name !== fileName))
     },
-    [revokePreview, setErrors, setFiles, setSuccesses]
+    [revokePreview, setErrors, setFiles, setProgressByFile, setSuccesses]
   )
 
   const reset = useCallback(() => {
@@ -210,7 +398,8 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
     })
     setErrors([])
     setSuccesses([])
-  }, [revokePreview, setErrors, setFiles, setSuccesses])
+    setProgressByFile({})
+  }, [revokePreview, setErrors, setFiles, setProgressByFile, setSuccesses])
 
   return {
     files,
@@ -221,6 +410,7 @@ const useSupabaseUpload = (options: UseSupabaseUploadOptions) => {
     loading,
     errors,
     setErrors,
+    progressByFile,
     removeFile,
     reset,
     onUpload,
