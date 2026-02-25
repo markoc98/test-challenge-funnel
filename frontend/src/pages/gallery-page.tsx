@@ -21,6 +21,8 @@ import { useSupabaseUpload } from '@/hooks/use-supabase-upload'
 import { supabase } from '@/lib/client'
 import { processImage } from '@/lib/api'
 
+const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
+
 function getPageNumbers(current: number, total: number): (number | 'ellipsis')[] {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
 
@@ -59,9 +61,15 @@ export function GalleryPage() {
         .select()
         .single()
 
-      if (error) {
+      if (error || !data) {
         console.error('Failed to insert image row:', error)
-        return
+        const { error: cleanupError } = await supabase.storage
+          .from(GALLERY_BUCKET)
+          .remove([storagePath])
+        if (cleanupError) {
+          console.error('Failed to cleanup orphaned storage object:', cleanupError)
+        }
+        throw new Error(error?.message ?? 'Failed to create image record')
       }
 
       addImage({ ...data, image_metadata: [] })
@@ -74,7 +82,7 @@ export function GalleryPage() {
   )
 
   const uploadProps = useSupabaseUpload({
-    bucketName: 'gallery',
+    bucketName: GALLERY_BUCKET,
     path: `${userId}/originals`,
     allowedMimeTypes: ['image/jpeg', 'image/png'],
     maxFiles: 10,
@@ -83,13 +91,7 @@ export function GalleryPage() {
     onFileUploaded: handleFileUploaded,
   })
 
-  const { setFiles, setSuccesses, setErrors } = uploadProps
-
-  const resetUpload = useCallback(() => {
-    setFiles([])
-    setSuccesses([])
-    setErrors([])
-  }, [setFiles, setSuccesses, setErrors])
+  const resetUpload = uploadProps.reset
 
   const queuedFileCount = uploadProps.files.length
 

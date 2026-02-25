@@ -4,9 +4,7 @@ import type { GalleryImage, ImageMetadataRow, ImageRow } from '@/types/gallery'
 
 const PAGE_SIZE = 20
 const THUMBNAIL_URL_TTL_SECONDS = 60 * 60
-const GALLERY_BUCKET =
-  import.meta.env.SUPABASE_STORAGE_BUCKET ??
-  'gallery'
+const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
 
 async function createSignedThumbnailUrl(
   thumbnailPath: string | null

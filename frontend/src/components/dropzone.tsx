@@ -63,7 +63,7 @@ const Dropzone = ({
 const DropzoneContent = ({ className }: { className?: string }) => {
   const {
     files,
-    setFiles,
+    removeFile,
     onUpload,
     loading,
     successes,
@@ -78,9 +78,9 @@ const DropzoneContent = ({ className }: { className?: string }) => {
 
   const handleRemoveFile = useCallback(
     (fileName: string) => {
-      setFiles((prev) => prev.filter((file) => file.name !== fileName))
+      removeFile(fileName)
     },
-    [setFiles]
+    [removeFile]
   )
 
   return (
