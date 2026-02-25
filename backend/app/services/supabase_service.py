@@ -2,11 +2,21 @@ from __future__ import annotations
 
 from functools import lru_cache
 import mimetypes
-from typing import Any
+from typing import Any, TypeVar
 
+from pydantic import BaseModel, ValidationError
 from supabase import Client, create_client
 
 from app.config import get_settings
+from app.models.db import (
+    ImageMetadataRecord,
+    ImageRecord,
+    ImageUpdatePayload,
+    MetadataCreatePayload,
+    MetadataMutationPayload,
+)
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 class SupabaseError(Exception):
@@ -55,66 +65,105 @@ class SupabaseService:
             raise SupabaseError(f"Supabase operation failed while {context}: {exc}") from exc
         return self._rows(response)
 
-    def get_image(self, image_id: int, user_id: str) -> dict[str, Any] | None:
-        rows = self._execute_rows(
+    @staticmethod
+    def _validate_row(row: dict[str, Any], *, model: type[ModelT], context: str) -> ModelT:
+        try:
+            return model.model_validate(row)
+        except ValidationError as exc:
+            raise SupabaseError(
+                f"Supabase returned invalid {model.__name__} data while {context}: {exc}"
+            ) from exc
+
+    def _execute_typed_rows(
+        self,
+        query: Any,
+        *,
+        model: type[ModelT],
+        context: str,
+    ) -> list[ModelT]:
+        return [
+            self._validate_row(row, model=model, context=context)
+            for row in self._execute_rows(query, context=context)
+        ]
+
+    def get_image(self, image_id: int, user_id: str) -> ImageRecord | None:
+        rows = self._execute_typed_rows(
             self._client.table("images")
             .select("id,user_id,filename,original_path,thumbnail_path")
             .eq("id", image_id)
             .eq("user_id", user_id)
             .limit(1),
+            model=ImageRecord,
             context=f"fetching image {image_id}",
         )
         return rows[0] if rows else None
 
-    def get_metadata(self, image_id: int, user_id: str) -> dict[str, Any] | None:
-        rows = self._execute_rows(
+    def get_metadata(self, image_id: int, user_id: str) -> ImageMetadataRecord | None:
+        rows = self._execute_typed_rows(
             self._client.table("image_metadata")
             .select("id,image_id,user_id,ai_processing_status,tags,description,colors,error_message")
             .eq("image_id", image_id)
             .eq("user_id", user_id)
             .limit(1),
+            model=ImageMetadataRecord,
             context=f"fetching metadata for image {image_id}",
         )
         return rows[0] if rows else None
 
-    def create_metadata(self, payload: dict[str, Any]) -> dict[str, Any]:
-        rows = self._execute_rows(
+    def create_metadata(self, payload: MetadataCreatePayload) -> ImageMetadataRecord:
+        rows = self._execute_typed_rows(
             self._client.table("image_metadata").insert(payload),
+            model=ImageMetadataRecord,
             context="creating image metadata",
         )
         if not rows:
             raise SupabaseError("Supabase did not return the inserted metadata row.")
         return rows[0]
 
-    def update_metadata(self, metadata_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        rows = self._execute_rows(
+    def update_metadata(
+        self,
+        metadata_id: int,
+        payload: MetadataMutationPayload,
+    ) -> ImageMetadataRecord:
+        rows = self._execute_typed_rows(
             self._client.table("image_metadata")
             .update(payload)
             .eq("id", metadata_id),
+            model=ImageMetadataRecord,
             context=f"updating metadata {metadata_id}",
         )
         if not rows:
             raise SupabaseError(f"Metadata row {metadata_id} was not updated.")
         return rows[0]
 
-    def upsert_metadata(self, image_id: int, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def upsert_metadata(
+        self,
+        image_id: int,
+        user_id: str,
+        payload: MetadataMutationPayload,
+    ) -> ImageMetadataRecord:
         existing = self.get_metadata(image_id=image_id, user_id=user_id)
         if existing:
-            return self.update_metadata(metadata_id=existing["id"], payload=payload)
-        return self.create_metadata(
-            {
-                "image_id": image_id,
-                "user_id": user_id,
-                **payload,
-            }
-        )
+            return self.update_metadata(metadata_id=existing.id, payload=payload)
+        create_payload: MetadataCreatePayload = {
+            "image_id": image_id,
+            "user_id": user_id,
+            **payload,
+        }
+        return self.create_metadata(create_payload)
 
-    def update_image(self, image_id: int, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        rows = self._execute_rows(
+    def update_image(
+        self,
+        image_id: int,
+        user_id: str,
+        payload: ImageUpdatePayload,
+    ) -> ImageRecord:
+        rows = self._execute_typed_rows(
             self._client.table("images")
             .update(payload)
             .eq("id", image_id)
             .eq("user_id", user_id),
+            model=ImageRecord,
             context=f"updating image {image_id}",
         )
         if not rows:

@@ -1,6 +1,6 @@
 import logging
-from typing import Any
 
+from app.models.db import ImageRecord
 from app.services.ai_analyzer import AnalyzerError, get_image_analyzer
 from app.services.supabase_service import SupabaseError, get_supabase_service
 from app.services.image_service import extract_dominant_colors, create_thumbnail
@@ -17,12 +17,12 @@ def _thumbnail_path(user_id: str, image_id: int, original_path: str) -> str:
 async def process_image_job(
     image_id: int,
     user_id: str,
-    image: Any,
+    image: ImageRecord,
 ) -> None:
     supabase = get_supabase_service()
     try:
-        original_path = image.get("original_path")
-        if not isinstance(original_path, str) or not original_path.strip():
+        original_path = image.original_path
+        if not original_path or not original_path.strip():
             raise RuntimeError("Image original_path is missing.")
 
         image_url = supabase.create_signed_url(original_path, download=False)
