@@ -4,6 +4,7 @@ import { AuthProvider } from '@/auth/auth-provider'
 import { AppLayout } from '@/components/app-layout'
 import { AuthRedirect } from '@/components/auth-redirect'
 import { ProtectedRoute } from '@/components/protected-route'
+import { Toaster } from '@/components/ui/sonner'
 import { GalleryPage } from '@/pages/gallery-page'
 import { LoginPage } from '@/pages/login-page'
 import { SignUpPage } from '@/pages/sign-up-page'
@@ -25,6 +26,7 @@ function App() {
           <Route path="/" element={<AuthRedirect />} />
           <Route path="*" element={<AuthRedirect />} />
         </Routes>
+        <Toaster position="top-right" richColors />
       </AuthProvider>
     </BrowserRouter>
   )

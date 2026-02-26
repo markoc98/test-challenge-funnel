@@ -5,4 +5,5 @@ export type ImageMetadataRow = Database['public']['Tables']['image_metadata']['R
 
 export type GalleryImage = ImageRow & {
   image_metadata: ImageMetadataRow[]
+  thumbUrl?: string | null
 }

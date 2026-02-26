@@ -1,8 +1,36 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '@/lib/client'
-import type { GalleryImage, ImageMetadataRow } from '@/types/gallery'
+import { getSignedUrlCached } from '@/lib/signed-url-cache'
+import type { GalleryImage, ImageMetadataRow, ImageRow } from '@/types/gallery'
 
 const PAGE_SIZE = 20
+const THUMBNAIL_URL_TTL_SECONDS = 60 * 60
+const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
+
+async function createSignedThumbnailUrl(
+  thumbnailPath: string | null
+): Promise<string | null> {
+  if (!thumbnailPath) return null
+
+  const signedUrl = await getSignedUrlCached({
+    bucket: GALLERY_BUCKET,
+    path: thumbnailPath,
+    expiresIn: THUMBNAIL_URL_TTL_SECONDS,
+  })
+  if (!signedUrl) {
+    console.error('Failed to sign thumbnail URL.')
+  }
+  return signedUrl
+}
+
+async function attachThumbnailUrls(images: GalleryImage[]): Promise<GalleryImage[]> {
+  return Promise.all(
+    images.map(async (image) => ({
+      ...image,
+      thumbUrl: await createSignedThumbnailUrl(image.thumbnail_path),
+    }))
+  )
+}
 
 export function useGalleryImages(userId: string | undefined) {
   const [images, setImages] = useState<GalleryImage[]>([])
@@ -30,7 +58,9 @@ export function useGalleryImages(userId: string | undefined) {
     if (error) {
       console.error('Failed to fetch images:', error)
     } else {
-      setImages((data as GalleryImage[]) ?? [])
+      const fetchedImages = (data as GalleryImage[]) ?? []
+      const imagesWithSignedThumbs = await attachThumbnailUrls(fetchedImages)
+      setImages(imagesWithSignedThumbs)
       setTotalCount(count ?? 0)
     }
 
@@ -57,13 +87,24 @@ export function useGalleryImages(userId: string | undefined) {
           filter: `user_id=eq.${userId}`,
         },
         (payload) => {
-          setImages((prev) =>
-            prev.map((img) =>
-              img.id === payload.new.id
-                ? { ...img, ...payload.new, image_metadata: img.image_metadata }
-                : img
+          const updatedImage = payload.new as ImageRow
+
+          void (async () => {
+            const thumbUrl = await createSignedThumbnailUrl(updatedImage.thumbnail_path)
+
+            setImages((prev) =>
+              prev.map((img) =>
+                img.id === updatedImage.id
+                  ? {
+                    ...img,
+                    ...updatedImage,
+                    image_metadata: img.image_metadata,
+                    thumbUrl,
+                  }
+                  : img
+              )
             )
-          )
+          })()
         }
       )
       .on(
@@ -127,6 +168,29 @@ export function useGalleryImages(userId: string | undefined) {
     [page]
   )
 
+  const setImageProcessingStatus = useCallback(
+    (imageId: number, status: 'processing' | 'failed') => {
+      setImages((prev) =>
+        prev.map((img) => {
+          if (img.id !== imageId || img.image_metadata.length === 0) return img
+          const [currentMeta, ...restMeta] = img.image_metadata
+          return {
+            ...img,
+            image_metadata: [
+              {
+                ...currentMeta,
+                ai_processing_status: status,
+                error_message: status === 'processing' ? null : currentMeta.error_message,
+              },
+              ...restMeta,
+            ],
+          }
+        })
+      )
+    },
+    []
+  )
+
   return {
     images,
     loading,
@@ -135,6 +199,7 @@ export function useGalleryImages(userId: string | undefined) {
     totalPages,
     totalCount,
     addImage,
+    setImageProcessingStatus,
     refetch: fetchImages,
   }
 }
