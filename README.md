@@ -177,7 +177,7 @@ Image analysis uses GPT-4o-mini via the OpenAI Vision API. The prompt is tuned t
 
 Color extraction is handled separately by Pillow's k-means quantization — this avoids LLM cost for a task that doesn't benefit from language understanding. The top 3 dominant colors are stored as hex strings.
 
-See [AI_COMPARISON.md](./AI_COMPARISON.md) for the full service comparison.
+See [AI_COMPARISON.md](./docs/AI_COMPARISON.md) for the full service comparison.
 
 ### Image Upload: Direct-to-Storage via TUS
 
