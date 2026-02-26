@@ -1,4 +1,4 @@
-import { Upload } from 'lucide-react'
+import { RotateCcw, Upload } from 'lucide-react'
 
 import {
   Dropzone,
@@ -44,19 +44,26 @@ function GalleryUploadPanel({
     (uploadProps.isSuccess || uploadProps.errors.length > 0)
 
   const content = (
-    <ScrollArea className="max-h-[52vh] md:max-h-[calc(100dvh-12rem)]">
-      <Dropzone {...uploadProps} className="p-4">
-        <DropzoneEmptyState className="py-4" />
-        <DropzoneContent />
-      </Dropzone>
-      {canReset && (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <ScrollArea className="max-h-[52vh] md:max-h-[calc(100dvh-12rem)]">
         <div className="px-4 pb-4">
-          <Button size="sm" variant="outline" onClick={onReset}>
-            Upload more
-          </Button>
+          <Dropzone {...uploadProps} className="pt-3">
+            <DropzoneEmptyState className="py-4" />
+            <DropzoneContent />
+          </Dropzone>
+        </div>
+      </ScrollArea>
+      {canReset && (
+        <div className="border-t bg-background/90 px-4 py-3 backdrop-blur-sm">
+          <div className="flex items-center justify-end gap-3">
+            <Button size="sm" variant="secondary" onClick={onReset} className="gap-2">
+              <RotateCcw className="size-3.5" />
+              Start new batch
+            </Button>
+          </div>
         </div>
       )}
-    </ScrollArea>
+    </div>
   )
 
   if (isMobile) {

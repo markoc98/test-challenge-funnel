@@ -46,6 +46,8 @@ function GalleryCard({
   const canFilterByColor = Boolean(onFilterByColor && !isProcessing)
   const normalizedActiveColor = activeColorHex?.toUpperCase() ?? null
   const thumbnailUrl = image.thumbUrl ?? null
+  const previewTags = metadata?.tags ?? []
+  const previewColors = metadata?.colors ?? []
 
   const handleColorFilterClick = (colorHex: string) => {
     if (!onFilterByColor) return
@@ -111,10 +113,10 @@ function GalleryCard({
       <SheetTrigger asChild>
         <button
           type="button"
-          className="w-full overflow-hidden rounded-lg border bg-card text-left shadow-sm transition hover:ring-2 hover:ring-primary/30"
+          className="flex h-full w-full flex-col overflow-hidden rounded-lg border bg-card text-left shadow-sm transition hover:ring-2 hover:ring-primary/30"
           aria-label={`Open details for ${image.filename ?? 'image'}`}
         >
-          <div className="aspect-square bg-muted">
+          <div className="aspect-square flex-none bg-muted">
             {thumbnailUrl ? (
               <img
                 src={thumbnailUrl}
@@ -126,8 +128,10 @@ function GalleryCard({
             )}
           </div>
 
-          <div className="space-y-2 p-3">
-            <p className="truncate text-sm font-medium">{image.filename ?? 'Untitled'}</p>
+          <div className="flex min-h-44 flex-col gap-2 p-3">
+            <p className="truncate text-sm font-medium leading-5">
+              {image.filename ?? 'Untitled'}
+            </p>
 
             {isProcessing ? (
               <div className="space-y-1.5">
@@ -136,19 +140,17 @@ function GalleryCard({
               </div>
             ) : (
               <>
-                {metadata.description && (
-                  <p className="line-clamp-2 text-xs text-muted-foreground">
-                    {metadata.description}
-                  </p>
-                )}
+                <p className="min-h-8 line-clamp-2 text-xs text-muted-foreground">
+                  {metadata.description ?? 'No description available.'}
+                </p>
 
-                {metadata.tags && metadata.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {metadata.tags.slice(0, 4).map((tag) => (
+                <div className="min-h-[3.25rem]">
+                  <div className="-m-0.5 flex max-h-[3.25rem] flex-wrap content-start gap-1 overflow-hidden p-0.5">
+                    {previewTags.slice(0, 4).map((tag) => (
                       <button
                         key={tag}
                         type="button"
-                        className={`rounded-full bg-muted px-2 py-0.5 text-xs transition-all duration-150 ${
+                        className={`max-w-full truncate rounded-full bg-muted px-2 py-0.5 text-xs transition-all duration-150 ${
                           onTagClick
                             ? 'cursor-pointer hover:bg-accent hover:text-accent-foreground hover:ring-1 hover:ring-primary/70'
                             : ''
@@ -160,11 +162,11 @@ function GalleryCard({
                       </button>
                     ))}
                   </div>
-                )}
+                </div>
 
-                {metadata.colors && metadata.colors.length > 0 && (
+                <div className="mt-auto min-h-4">
                   <div className="flex gap-1">
-                    {metadata.colors.map((color) => (
+                    {previewColors.map((color) => (
                       <span
                         key={color}
                         className={`h-4 w-4 rounded-full border transition-transform duration-150 hover:scale-110 hover:ring-2 hover:ring-primary/70 hover:ring-offset-1 hover:ring-offset-background ${
@@ -176,7 +178,7 @@ function GalleryCard({
                       />
                     ))}
                   </div>
-                )}
+                </div>
               </>
             )}
           </div>

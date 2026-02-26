@@ -37,6 +37,7 @@ const Dropzone = ({
 }: PropsWithChildren<DropzoneProps>) => {
   const isSuccess = restProps.isSuccess
   const isActive = restProps.isDragActive
+  const hasFiles = restProps.files.length > 0
   const isInvalid =
     (restProps.isDragActive && restProps.isDragReject) ||
     (restProps.errors.length > 0 && !restProps.isSuccess) ||
@@ -47,11 +48,16 @@ const Dropzone = ({
       <div
         {...getRootProps({
           className: cn(
-            'rounded-xl border border-border/80 bg-gradient-to-b from-card to-muted/20 p-5 text-center text-foreground shadow-sm transition-all duration-200',
+            'rounded-xl text-foreground transition-all duration-200',
             className,
-            isSuccess ? 'border-solid' : 'border-dashed',
-            isActive && 'border-primary bg-primary/5 ring-2 ring-primary/20',
-            isInvalid && 'border-destructive bg-destructive/5 ring-2 ring-destructive/15'
+            hasFiles
+              ? 'border-0 bg-transparent p-0 shadow-none'
+              : 'border border-border/80 bg-gradient-to-b from-card to-muted/20 p-5 shadow-sm',
+            !hasFiles && (isSuccess ? 'border-solid' : 'border-dashed'),
+            !hasFiles && isActive && 'border-primary bg-primary/5 ring-2 ring-primary/20',
+            !hasFiles && isInvalid && 'border-destructive bg-destructive/5 ring-2 ring-destructive/15',
+            hasFiles && isActive && 'ring-2 ring-primary/20',
+            hasFiles && isInvalid && 'ring-2 ring-destructive/15'
           ),
         })}
       >
@@ -70,11 +76,13 @@ const DropzoneContent = ({ className }: { className?: string }) => {
     successes,
     errors,
     progressByFile,
+    inputRef,
     maxFileSize,
     maxFiles,
   } = useDropzoneContext()
 
   const exceedMaxFiles = files.length > maxFiles
+  const canAddMore = files.length < maxFiles
   const successfulNames = new Set(successes)
   const hasPendingUploads = files.some((file) => !successfulNames.has(file.name))
 
@@ -87,6 +95,23 @@ const DropzoneContent = ({ className }: { className?: string }) => {
 
   return (
     <div className={cn('flex flex-col', className)}>
+      {files.length > 0 && (
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground">
+            {successfulNames.size} of {files.length} complete
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-8 px-2 text-xs"
+            onClick={() => inputRef.current?.click()}
+            disabled={!canAddMore || loading}
+          >
+            Add files
+          </Button>
+        </div>
+      )}
       {files.map((file, idx) => {
         const fileError = errors.find((e) => e.name === file.name)
         const isSuccessfullyUploaded = successfulNames.has(file.name)
@@ -126,7 +151,12 @@ const DropzoneContent = ({ className }: { className?: string }) => {
         return (
           <div
             key={`${file.name}-${idx}`}
-            className="grid grid-cols-[auto_1fr_auto] items-start gap-x-3 border-b py-3 first:mt-4 last:mb-4"
+            className={cn(
+              'grid grid-cols-[auto_1fr_auto] items-start gap-x-3 bg-card px-3 py-3',
+              idx === 0 && 'rounded-t-xl border border-border/80',
+              idx > 0 && 'border-x border-b border-border/80',
+              idx === files.length - 1 && 'rounded-b-xl'
+            )}
           >
             {file.type.startsWith('image/') ? (
               <div className="h-10 w-10 rounded border overflow-hidden shrink-0 bg-muted flex items-center justify-center">
@@ -189,7 +219,7 @@ const DropzoneContent = ({ className }: { className?: string }) => {
         </p>
       )}
       {files.length > 0 && !exceedMaxFiles && hasPendingUploads && (
-        <div className="mt-2">
+        <div className="mt-3 flex justify-end">
           <Button
             variant="outline"
             onClick={onUpload}
@@ -212,9 +242,9 @@ const DropzoneContent = ({ className }: { className?: string }) => {
 }
 
 const DropzoneEmptyState = ({ className }: { className?: string }) => {
-  const { maxFiles, maxFileSize, inputRef, isSuccess } = useDropzoneContext()
+  const { files, maxFiles, maxFileSize, inputRef, isSuccess } = useDropzoneContext()
 
-  if (isSuccess) {
+  if (isSuccess || files.length > 0) {
     return null
   }
 
