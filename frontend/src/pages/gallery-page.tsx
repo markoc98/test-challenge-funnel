@@ -1,669 +1,197 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Search, Upload, X } from 'lucide-react'
-import { toast } from 'sonner'
-
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Upload } from 'lucide-react'
 import { useAuth } from '@/auth/use-auth'
-import { GalleryCard } from '@/components/gallery-card'
+import { GalleryFilterBadges } from '@/components/gallery-filter-badges'
+import { GalleryGrid, type GalleryViewState } from '@/components/gallery-grid'
+import { GalleryPagination } from '@/components/gallery-pagination'
+import { GallerySearchBar } from '@/components/gallery-search-bar'
 import { GalleryUploadPanel } from '@/components/gallery-upload-panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import {
-  Pagination,
-  PaginationContent,
-  PaginationEllipsis,
-  PaginationItem,
-  PaginationLink,
-  PaginationNext,
-  PaginationPrevious,
-} from '@/components/ui/pagination'
-import { Skeleton } from '@/components/ui/skeleton'
+import { useColorFilter } from '@/hooks/use-color-filter'
 import { useGalleryImages } from '@/hooks/use-gallery-images'
-import { useSupabaseUpload } from '@/hooks/use-supabase-upload'
-import {
-  findImagesByColor,
-  findSimilarImages,
-  processImage,
-  type ColorSearchMatch,
-  type ColorSearchResponse,
-  type SimilarImageMatch,
-  type SimilarImagesResponse,
-} from '@/lib/api'
-import { supabase } from '@/lib/client'
-import { getSignedUrlCached } from '@/lib/signed-url-cache'
-import type { GalleryImage, ImageMetadataRow } from '@/types/gallery'
+import { useGalleryUpload } from '@/hooks/use-gallery-upload'
+import { useSearchImages } from '@/hooks/use-search-images'
+import { useSimilarFilter } from '@/hooks/use-similar-filter'
+import { processImage } from '@/lib/api'
+import { GALLERY_BUCKET } from '@/lib/gallery-constants'
+import type { GalleryImage } from '@/types/gallery'
 
-const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
-const THUMBNAIL_URL_TTL_SECONDS = 60 * 60
-const SEARCH_DEBOUNCE_MS = 300
-
-type SimilarFilterState = {
-  query: SimilarImagesResponse['query']
-  images: GalleryImage[]
-}
-
-type ColorFilterState = {
-  queryColor: ColorSearchResponse['query_color']
-  matchThreshold: ColorSearchResponse['match_threshold']
-  images: GalleryImage[]
-}
-
-type GallerySearchMatch = Pick<
-  SimilarImageMatch | ColorSearchMatch,
-  | 'image_id'
-  | 'filename'
-  | 'original_path'
-  | 'thumbnail_path'
-  | 'tags'
-  | 'colors'
-  | 'description'
->
-
-type ImageMetadataSearchRow = {
-  image_id: number | null
-}
-
-async function createSignedThumbnailUrl(
-  thumbnailPath: string | null
-): Promise<string | null> {
-  if (!thumbnailPath) return null
-
-  const signedUrl = await getSignedUrlCached({
-    bucket: GALLERY_BUCKET,
-    path: thumbnailPath,
-    expiresIn: THUMBNAIL_URL_TTL_SECONDS,
-  })
-  return signedUrl
-}
-
-function toSyntheticMetadataRow(match: GallerySearchMatch, userId: string): ImageMetadataRow {
-  // Dev note: similarity endpoint returns denormalized metadata, so we synthesize a row for card rendering.
-  return {
-    id: -match.image_id,
-    image_id: match.image_id,
-    user_id: userId,
-    ai_processing_status: 'completed',
-    tags: match.tags,
-    description: match.description,
-    colors: match.colors,
-    error_message: null,
-    created_at: null,
-  }
-}
-
-async function toGalleryImage(
-  match: GallerySearchMatch,
-  userId: string,
-  existingThumbUrl?: string | null
-): Promise<GalleryImage> {
-  const thumbUrl =
-    existingThumbUrl ?? (await createSignedThumbnailUrl(match.thumbnail_path))
-  return {
-    id: match.image_id,
-    user_id: userId,
-    filename: match.filename,
-    original_path: match.original_path,
-    thumbnail_path: match.thumbnail_path,
-    uploaded_at: null,
-    image_metadata: [toSyntheticMetadataRow(match, userId)],
-    thumbUrl,
-  }
-}
-
-function getPageNumbers(current: number, total: number): (number | 'ellipsis')[] {
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
-
-  const pages: (number | 'ellipsis')[] = [1]
-
-  if (current > 3) pages.push('ellipsis')
-
-  const start = Math.max(2, current - 1)
-  const end = Math.min(total - 1, current + 1)
-  for (let i = start; i <= end; i++) pages.push(i)
-
-  if (current < total - 2) pages.push('ellipsis')
-
-  pages.push(total)
-  return pages
-}
-
-function normalizeSearchQuery(value: string): string {
-  return value.trim().replace(/\s+/g, ' ')
-}
-
-function toTagSearchTerms(query: string): string[] {
-  return Array.from(
-    new Set(
-      query
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(Boolean)
-    )
-  )
-}
-
-function setImageStatusInList(
-  list: GalleryImage[],
-  imageId: number,
-  status: 'processing' | 'failed'
-): GalleryImage[] {
-  return list.map((item) => {
-    if (item.id !== imageId || item.image_metadata.length === 0) return item
-    const [currentMeta, ...restMeta] = item.image_metadata
-    return {
-      ...item,
-      image_metadata: [
-        {
-          ...currentMeta,
-          ai_processing_status: status,
-          error_message: status === 'processing' ? null : currentMeta.error_message,
-        },
-        ...restMeta,
-      ],
-    }
-  })
-}
+const SEARCH_RESULTS_PAGE_SIZE = 20
 
 export function GalleryPage() {
   const { user } = useAuth()
-  const userId = user!.id
+  const userId = user?.id
   const [isUploadPanelOpen, setUploadPanelOpen] = useState(false)
-  const [similarFilter, setSimilarFilter] = useState<SimilarFilterState | null>(null)
-  const [similarLoadingImageId, setSimilarLoadingImageId] = useState<number | null>(null)
-  const [colorFilter, setColorFilter] = useState<ColorFilterState | null>(null)
-  const [isColorFilterLoading, setColorFilterLoading] = useState(false)
-  const [colorLoadingHex, setColorLoadingHex] = useState<string | null>(null)
-  const [searchInput, setSearchInput] = useState('')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<GalleryImage[]>([])
-  const [isSearchLoading, setSearchLoading] = useState(false)
-  const searchRequestIdRef = useRef(0)
-  const searchErrorToastAtRef = useRef(0)
-
-  const {
-    images,
-    loading,
-    page,
-    setPage,
-    totalPages,
-    addImage,
-    setImageProcessingStatus,
-  } =
-    useGalleryImages(userId)
-  const isTextSearchActive = searchQuery.length > 0
-  const isSimilarFilterActive = similarFilter !== null
-  const isColorFilterActive = colorFilter !== null
-
+  const [filteredPage, setFilteredPage] = useState(1)
+  const { images, loading, page, setPage, totalPages, addImage, setImageProcessingStatus } = useGalleryImages(userId)
   const existingThumbUrlByImageId = useMemo(
     () => new Map(images.map((item) => [item.id, item.thumbUrl ?? null])),
     [images]
   )
-  const displayedImages = useMemo(() => {
-    if (similarFilter) return similarFilter.images
-    if (colorFilter) return colorFilter.images
-    if (isTextSearchActive) return searchResults
-    return images
-  }, [colorFilter, images, isTextSearchActive, searchResults, similarFilter])
-
-  const similarQueryImage = useMemo(() => {
-    if (!similarFilter) return null
-    return images.find((item) => item.id === similarFilter.query.image_id) ?? null
-  }, [images, similarFilter])
-  const similarQueryLabel = similarQueryImage?.filename ?? (
-    similarFilter ? `image #${similarFilter.query.image_id}` : null
-  )
-
-  const clearTextSearch = useCallback(() => {
-    searchRequestIdRef.current += 1
-    setSearchInput('')
-    setSearchQuery('')
-    setSearchResults([])
-    setSearchLoading(false)
-  }, [])
-
-  const notifySearchError = useCallback(() => {
-    const now = Date.now()
-    if (now - searchErrorToastAtRef.current < 2500) return
-    searchErrorToastAtRef.current = now
-    toast.error('Text search failed. Please try again.')
-  }, [])
-
+  const search = useSearchImages({ userId, existingThumbUrlByImageId })
+  const similar = useSimilarFilter({ userId, filteredPage, existingThumbUrlByImageId })
+  const color = useColorFilter({ userId, filteredPage, existingThumbUrlByImageId })
   useEffect(() => {
-    const normalizedQuery = normalizeSearchQuery(searchInput)
-
-    if (!normalizedQuery) {
-      searchRequestIdRef.current += 1
-      setSearchQuery('')
-      setSearchResults([])
-      setSearchLoading(false)
-      return
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      const requestId = searchRequestIdRef.current + 1
-      searchRequestIdRef.current = requestId
-
-      setSimilarFilter(null)
-      setColorFilter(null)
-      setSearchQuery(normalizedQuery)
-      setSearchLoading(true)
-
-      void (async () => {
-        try {
-          const tagTerms = toTagSearchTerms(normalizedQuery)
-
-          const [descriptionResult, tagsResult] = await Promise.all([
-            supabase
-              .from('image_metadata')
-              .select('image_id')
-              .eq('user_id', userId)
-              .not('image_id', 'is', null)
-              .textSearch('description', normalizedQuery, {
-                type: 'websearch',
-                config: 'english',
-              }),
-            supabase
-              .from('image_metadata')
-              .select('image_id')
-              .eq('user_id', userId)
-              .not('image_id', 'is', null)
-              .overlaps('tags', tagTerms),
-          ])
-
-          if (searchRequestIdRef.current !== requestId) return
-
-          if (descriptionResult.error || tagsResult.error) {
-            notifySearchError()
-            setSearchResults([])
-            return
-          }
-
-          const imageIds = new Set<number>()
-          const metadataRows = [
-            ...((descriptionResult.data as ImageMetadataSearchRow[] | null) ?? []),
-            ...((tagsResult.data as ImageMetadataSearchRow[] | null) ?? []),
-          ]
-          for (const row of metadataRows) {
-            if (typeof row.image_id === 'number') imageIds.add(row.image_id)
-          }
-
-          if (imageIds.size === 0) {
-            setSearchResults([])
-            return
-          }
-
-          const { data: matchedImages, error: matchedImagesError } = await supabase
-            .from('images')
-            .select('*, image_metadata(*)')
-            .eq('user_id', userId)
-            .in('id', Array.from(imageIds))
-            .order('uploaded_at', { ascending: false })
-
-          if (searchRequestIdRef.current !== requestId) return
-
-          if (matchedImagesError) {
-            notifySearchError()
-            setSearchResults([])
-            return
-          }
-
-          const resultsWithSignedThumbs = await Promise.all(
-            ((matchedImages as GalleryImage[] | null) ?? []).map(async (image) => ({
-              ...image,
-              thumbUrl:
-                existingThumbUrlByImageId.get(image.id) ??
-                (await createSignedThumbnailUrl(image.thumbnail_path)),
-            }))
-          )
-
-          if (searchRequestIdRef.current !== requestId) return
-
-          setSearchResults(resultsWithSignedThumbs)
-        } catch {
-          if (searchRequestIdRef.current !== requestId) return
-          notifySearchError()
-          setSearchResults([])
-        } finally {
-          if (searchRequestIdRef.current === requestId) {
-            setSearchLoading(false)
-          }
-        }
-      })()
-    }, SEARCH_DEBOUNCE_MS)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [existingThumbUrlByImageId, notifySearchError, searchInput, userId])
-
-  const handleFileUploaded = useCallback(
-    async (filename: string, storagePath: string) => {
-      const { data, error } = await supabase
-        .from('images')
-        .insert({
-          user_id: userId,
-          filename,
-          original_path: storagePath,
-          uploaded_at: new Date().toISOString(),
-        })
-        .select()
-        .single()
-
-      if (error || !data) {
-        toast.error('Failed to save uploaded image. Please retry.')
-        await supabase.storage.from(GALLERY_BUCKET).remove([storagePath])
-        throw new Error(error?.message ?? 'Failed to create image record')
-      }
-
-      addImage({ ...data, image_metadata: [] })
-      void processImage(data.id).catch(() => {
-        toast.error('Image uploaded, but AI processing could not start.')
-      })
-
-    },
-    [userId, addImage]
+    if (!search.searchQuery) return
+    similar.clearSimilarFilter()
+    color.clearColorFilter()
+    setFilteredPage(1)
+  }, [color.clearColorFilter, search.searchQuery, similar.clearSimilarFilter])
+  const isTextSearchActive = search.searchQuery.length > 0
+  const isSimilarFilterActive = similar.similarFilter !== null
+  const isColorFilterActive = color.colorFilter !== null
+  const isDefaultGalleryView = !isSimilarFilterActive && !isColorFilterActive && !isTextSearchActive
+  const textSearchTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(search.searchResults.length / SEARCH_RESULTS_PAGE_SIZE)),
+    [search.searchResults.length]
   )
-
-  const handleFindSimilar = useCallback(
-    async (image: GalleryImage) => {
-      setSimilarLoadingImageId(image.id)
-      try {
-        clearTextSearch()
-        setColorFilter(null)
-        const response = await findSimilarImages(image.id)
-        const mappedImages = await Promise.all(
-          response.matches.map((match) =>
-            toGalleryImage(match, userId, existingThumbUrlByImageId.get(match.image_id))
-          )
-        )
-        setSimilarFilter({
-          query: response.query,
-          images: mappedImages,
-        })
-      } catch {
-        toast.error('Failed to find similar images. Please try again.')
-      } finally {
-        setSimilarLoadingImageId(null)
-      }
-    },
-    [clearTextSearch, existingThumbUrlByImageId, userId]
+  const displayedImages = useMemo(() => {
+    if (isDefaultGalleryView) return images
+    if (similar.similarFilter) return similar.similarFilter.images
+    if (color.colorFilter) return color.colorFilter.images
+    const from = (filteredPage - 1) * SEARCH_RESULTS_PAGE_SIZE
+    const to = from + SEARCH_RESULTS_PAGE_SIZE
+    return search.searchResults.slice(from, to)
+  }, [
+    color.colorFilter,
+    filteredPage,
+    images,
+    isDefaultGalleryView,
+    search.searchResults,
+    similar.similarFilter,
+  ])
+  const activePage = isDefaultGalleryView ? page : filteredPage
+  const activeTotalPages = isDefaultGalleryView
+    ? totalPages
+    : similar.similarFilter?.totalPages ??
+    color.colorFilter?.totalPages ??
+    textSearchTotalPages
+  useEffect(() => {
+    if (isDefaultGalleryView || filteredPage <= activeTotalPages) return
+    setFilteredPage(activeTotalPages)
+  }, [activeTotalPages, filteredPage, isDefaultGalleryView])
+  const similarQueryImage = useMemo(() => {
+    if (!similar.similarFilter) return null
+    return images.find((item) => item.id === similar.similarFilter!.query.image_id) ?? null
+  }, [images, similar.similarFilter])
+  const similarQueryLabel = similarQueryImage?.filename ?? (
+    similar.similarFilter ? `image #${similar.similarFilter.query.image_id}` : null
   )
-
-  const handleRetryProcessing = useCallback(async (image: GalleryImage) => {
-    setImageProcessingStatus(image.id, 'processing')
-    setSearchResults((prev) => setImageStatusInList(prev, image.id, 'processing'))
-    setSimilarFilter((prev) =>
-      prev ? { ...prev, images: setImageStatusInList(prev.images, image.id, 'processing') } : prev
-    )
-    setColorFilter((prev) =>
-      prev ? { ...prev, images: setImageStatusInList(prev.images, image.id, 'processing') } : prev
-    )
-    try {
-      await processImage(image.id)
-    } catch {
-      setImageProcessingStatus(image.id, 'failed')
-      setSearchResults((prev) => setImageStatusInList(prev, image.id, 'failed'))
-      setSimilarFilter((prev) =>
-        prev ? { ...prev, images: setImageStatusInList(prev.images, image.id, 'failed') } : prev
-      )
-      setColorFilter((prev) =>
-        prev ? { ...prev, images: setImageStatusInList(prev.images, image.id, 'failed') } : prev
-      )
-    }
-  }, [setImageProcessingStatus])
-
-  const handleFilterByColor = useCallback(
-    async (colorHex: string) => {
-      const normalizedColor = colorHex.toUpperCase()
-      setColorLoadingHex(normalizedColor)
-      setColorFilterLoading(true)
-      try {
-        clearTextSearch()
-        setSimilarFilter(null)
-        const response = await findImagesByColor(normalizedColor)
-        const mappedImages = await Promise.all(
-          response.matches.map((match) =>
-            toGalleryImage(match, userId, existingThumbUrlByImageId.get(match.image_id))
-          )
-        )
-        setColorFilter({
-          queryColor: response.query_color,
-          matchThreshold: response.match_threshold,
-          images: mappedImages,
-        })
-      } catch {
-        toast.error('Failed to filter images by color. Please try again.')
-      } finally {
-        setColorFilterLoading(false)
-        setColorLoadingHex(null)
-      }
-    },
-    [clearTextSearch, existingThumbUrlByImageId, userId]
-  )
-
+  const clearSearch = useCallback(() => {
+    search.clearSearch()
+    setFilteredPage(1)
+  }, [search])
   const clearSimilarFilter = useCallback(() => {
-    setSimilarFilter(null)
-  }, [])
-
+    similar.clearSimilarFilter()
+    setFilteredPage(1)
+  }, [similar])
   const clearColorFilter = useCallback(() => {
-    setColorFilter(null)
-  }, [])
-
-  const handleTagClick = useCallback((tag: string) => {
-    setSimilarFilter(null)
-    setColorFilter(null)
-    setSearchInput(tag)
-  }, [])
-
-  const uploadProps = useSupabaseUpload({
-    bucketName: GALLERY_BUCKET,
-    path: `${userId}/originals`,
-    allowedMimeTypes: ['image/jpeg', 'image/png'],
-    maxFiles: 10,
-    maxFileSize: 10 * 1024 * 1024,
-    upsert: true,
-    onFileUploaded: handleFileUploaded,
-  })
-
-  const resetUpload = uploadProps.reset
-
-  const queuedFileCount = uploadProps.files.length
-
+    color.clearColorFilter()
+    setFilteredPage(1)
+  }, [color])
+  const handleFindSimilar = useCallback(
+    (image: GalleryImage) => {
+      search.clearSearch()
+      color.clearColorFilter()
+      setFilteredPage(1)
+      similar.handleFindSimilar(image)
+    },
+    [color, search, similar]
+  )
+  const handleFilterByColor = useCallback(
+    (colorHex: string) => {
+      search.clearSearch()
+      similar.clearSimilarFilter()
+      setFilteredPage(1)
+      color.handleFilterByColor(colorHex)
+    },
+    [color, search, similar]
+  )
+  const handleRetryProcessing = useCallback(
+    async (image: GalleryImage) => {
+      setImageProcessingStatus(image.id, 'processing')
+      search.updateImageStatus(image.id, 'processing')
+      similar.updateImageStatus(image.id, 'processing')
+      color.updateImageStatus(image.id, 'processing')
+      try {
+        await processImage(image.id)
+      } catch {
+        setImageProcessingStatus(image.id, 'failed')
+        search.updateImageStatus(image.id, 'failed')
+        similar.updateImageStatus(image.id, 'failed')
+        color.updateImageStatus(image.id, 'failed')
+      }
+    },
+    [color, search, setImageProcessingStatus, similar]
+  )
+  const handleTagClick = useCallback(
+    (tag: string) => {
+      similar.clearSimilarFilter()
+      color.clearColorFilter()
+      setFilteredPage(1)
+      search.setSearchInput(tag)
+    },
+    [color, search, similar]
+  )
+  const uploadProps = useGalleryUpload({ userId, bucketName: GALLERY_BUCKET, addImage })
+  // GalleryPage is rendered inside a protected route, but keep this guard for runtime/type safety.
+  if (!user) return null
+  const isInitialGalleryLoading = loading && isDefaultGalleryView && images.length === 0
+  const isTextLoading = isTextSearchActive && search.isSearchLoading && displayedImages.length === 0
+  const isColorLoading = isColorFilterActive && color.isColorFilterLoading && displayedImages.length === 0
+  const galleryViewState: GalleryViewState =
+    isInitialGalleryLoading || isTextLoading || isColorLoading
+      ? 'loading'
+      : displayedImages.length === 0
+        ? 'empty'
+        : 'results'
+  const emptyMessage = isSimilarFilterActive
+    ? 'No similar matches above threshold. Clear the filter to view the full gallery.'
+    : isColorFilterActive
+      ? `No color matches for ${color.colorFilter?.queryColor ?? 'the selected color'}.`
+      : isTextSearchActive
+        ? `No text matches for "${search.searchQuery}".`
+        : 'No images yet. Use Upload images to get started.'
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <p className="text-sm text-muted-foreground">
-            Upload, review, and search your AI-tagged images.
-          </p>
-          <div className="flex w-full max-w-md items-center gap-2 pt-2">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="search"
-                value={searchInput}
-                onChange={(event) => setSearchInput(event.target.value)}
-                placeholder="Search description and tags"
-                className="pl-8"
-                aria-label="Search images by description and tags"
-              />
-            </div>
-            {searchInput.trim().length > 0 && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={clearTextSearch}
-              >
-                Clear
-              </Button>
-            )}
-          </div>
-          {isTextSearchActive && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <Badge variant="outline" className="gap-1.5">
-                {isSearchLoading ? <Loader2 className="size-3.5 animate-spin" /> : null}
-                <span>Text matches for "{searchQuery}"</span>
-              </Badge>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                onClick={clearTextSearch}
-                aria-label="Clear text search"
-              >
-                <X className="size-3" />
-              </Button>
-            </div>
-          )}
-          {similarFilter && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <Badge variant="outline" className="gap-1.5">
-                {similarQueryImage?.thumbUrl && (
-                  <img
-                    src={similarQueryImage.thumbUrl}
-                    alt=""
-                    className="size-6 rounded-sm object-cover"
-                    loading="lazy"
-                  />
-                )}
-                <span>Similar matches for {similarQueryLabel}</span>
-              </Badge>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                onClick={clearSimilarFilter}
-                aria-label="Clear similar filter"
-              >
-                <X className="size-3" />
-              </Button>
-            </div>
-          )}
-          {colorFilter && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <Badge variant="outline" className="gap-1.5">
-                {(isColorFilterLoading || colorLoadingHex) ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : null}
-                <span
-                  className="size-3 rounded-full border"
-                  style={{ backgroundColor: colorFilter.queryColor }}
-                  aria-hidden
-                />
-                <span>
-                  Color matches for {colorFilter.queryColor} ({'>='}{' '}
-                  {colorFilter.matchThreshold.toFixed(2)})
-                </span>
-              </Badge>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                onClick={clearColorFilter}
-                aria-label="Clear color filter"
-              >
-                <X className="size-3" />
-              </Button>
-            </div>
-          )}
+        <div>
+          <GallerySearchBar searchInput={search.searchInput} searchQuery={search.searchQuery} isSearchLoading={search.isSearchLoading} onSearchInputChange={search.setSearchInput} onClearSearch={clearSearch} />
+          <GalleryFilterBadges
+            similarFilter={similar.similarFilter}
+            similarQueryLabel={similarQueryLabel}
+            similarQueryThumbUrl={similarQueryImage?.thumbUrl ?? null}
+            onClearSimilar={clearSimilarFilter}
+            colorFilter={color.colorFilter}
+            isColorFilterLoading={color.isColorFilterLoading}
+            colorLoadingHex={color.colorLoadingHex}
+            onClearColor={clearColorFilter}
+          />
         </div>
-
         <Button onClick={() => setUploadPanelOpen(true)} className="gap-2">
           <Upload className="size-4" />
           Upload images
-          {queuedFileCount > 0 && <Badge variant="secondary">{queuedFileCount}</Badge>}
+          {uploadProps.files.length > 0 && <Badge variant="secondary">{uploadProps.files.length}</Badge>}
         </Button>
       </div>
-
-      {((loading &&
-        !isSimilarFilterActive &&
-        !isColorFilterActive &&
-        !isTextSearchActive &&
-        images.length === 0) ||
-        (isTextSearchActive && isSearchLoading && displayedImages.length === 0) ||
-        (isColorFilterActive && isColorFilterLoading && displayedImages.length === 0)) ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="overflow-hidden rounded-lg border bg-card">
-              <Skeleton className="aspect-square" />
-              <div className="space-y-1.5 p-3">
-                <Skeleton className="h-3 w-2/3" />
-                <Skeleton className="h-3 w-full" />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : displayedImages.length === 0 ? (
-        <p className="py-12 text-center text-muted-foreground">
-          {isSimilarFilterActive
-            ? 'No similar matches above threshold. Clear the filter to view the full gallery.'
-            : isColorFilterActive
-              ? `No color matches for ${colorFilter?.queryColor ?? 'the selected color'}.`
-            : isTextSearchActive
-              ? `No text matches for "${searchQuery}".`
-            : 'No images yet. Use Upload images to get started.'}
-        </p>
-      ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-          {displayedImages.map((image) => (
-            <GalleryCard
-              key={image.id}
-              image={image}
-              onFindSimilar={handleFindSimilar}
-              onRetryProcessing={handleRetryProcessing}
-              onTagClick={handleTagClick}
-              isFindingSimilar={similarLoadingImageId === image.id}
-              onFilterByColor={handleFilterByColor}
-              activeColorHex={colorFilter?.queryColor ?? null}
-              isFilteringColorHex={colorLoadingHex}
-            />
-          ))}
-        </div>
-      )}
-
-      {!isSimilarFilterActive && !isColorFilterActive && !isTextSearchActive && totalPages > 1 && (
-        <Pagination>
-          <PaginationContent>
-            <PaginationItem>
-              <PaginationPrevious
-                onClick={() => setPage(Math.max(1, page - 1))}
-                className={page <= 1 ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
-              />
-            </PaginationItem>
-
-            {getPageNumbers(page, totalPages).map((p, i) =>
-              p === 'ellipsis' ? (
-                <PaginationItem key={`ellipsis-${i}`}>
-                  <PaginationEllipsis />
-                </PaginationItem>
-              ) : (
-                <PaginationItem key={p}>
-                  <PaginationLink
-                    isActive={p === page}
-                    onClick={() => setPage(p)}
-                    className="cursor-pointer"
-                  >
-                    {p}
-                  </PaginationLink>
-                </PaginationItem>
-              )
-            )}
-
-            <PaginationItem>
-              <PaginationNext
-                onClick={() => setPage(Math.min(totalPages, page + 1))}
-                className={page >= totalPages ? 'pointer-events-none opacity-50' : 'cursor-pointer'}
-              />
-            </PaginationItem>
-          </PaginationContent>
-        </Pagination>
-      )}
-
+      <GalleryGrid
+        galleryViewState={galleryViewState}
+        emptyMessage={emptyMessage}
+        displayedImages={displayedImages}
+        onFindSimilar={handleFindSimilar}
+        onRetryProcessing={handleRetryProcessing}
+        onTagClick={handleTagClick}
+        similarLoadingImageId={similar.similarLoadingImageId}
+        onFilterByColor={handleFilterByColor}
+        activeColorHex={color.colorFilter?.queryColor ?? null}
+        isFilteringColorHex={color.colorLoadingHex}
+      />
+      <GalleryPagination isDefaultGalleryView={isDefaultGalleryView} activePage={activePage} activeTotalPages={activeTotalPages} setPage={setPage} setFilteredPage={setFilteredPage} />
       <GalleryUploadPanel
         open={isUploadPanelOpen}
         onOpenChange={setUploadPanelOpen}
-        onReset={resetUpload}
+        onReset={uploadProps.reset}
         uploadProps={uploadProps}
       />
     </section>

@@ -1,4 +1,5 @@
 import asyncio
+import math
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
@@ -111,7 +112,7 @@ async def find_similar_images(
         query, scored = similarity.rank_similar(
             query_image_id=payload.image_id,
             candidates=candidates,
-            top_k=settings.similarity_top_k,
+            top_k=len(candidates),
         )
     except SimilarityError as exc:
         raise HTTPException(
@@ -119,18 +120,17 @@ async def find_similar_images(
             detail="Image metadata is not ready for similarity search.",
         ) from exc
 
+    threshold = settings.similarity_match_threshold
+    matched_rows = [row for row in scored if row.score >= threshold]
+
     image_lookup = await asyncio.to_thread(
         supabase.get_images_by_ids,
         user_id=user_id,
-        image_ids=[row.image_id for row in scored],
+        image_ids=[row.image_id for row in matched_rows],
     )
 
     matches: list[SimilarImageMatch] = []
-    threshold = settings.similarity_match_threshold
-    for row in scored:
-        is_match = row.score >= threshold
-        if not is_match:
-            continue
+    for row in matched_rows:
         image_row = image_lookup.get(row.image_id)
         matches.append(
             SimilarImageMatch(
@@ -139,7 +139,7 @@ async def find_similar_images(
                 original_path=image_row.original_path if image_row else None,
                 thumbnail_path=image_row.thumbnail_path if image_row else None,
                 score=row.score,
-                is_match=is_match,
+                is_match=True,
                 tags=row.tags,
                 colors=row.colors,
                 description=row.description,
@@ -151,6 +151,12 @@ async def find_similar_images(
             )
         )
 
+    total_count = len(matches)
+    total_pages = max(1, math.ceil(total_count / payload.limit))
+    start = (payload.page - 1) * payload.limit
+    end = start + payload.limit
+    paged_matches = matches[start:end]
+
     return SimilarImagesResponse(
         query=SimilarImageQueryMetadata(
             image_id=query.image_id,
@@ -159,7 +165,11 @@ async def find_similar_images(
             description=query.description,
         ),
         match_threshold=threshold,
-        matches=matches,
+        page=payload.page,
+        limit=payload.limit,
+        total_count=total_count,
+        total_pages=total_pages,
+        matches=paged_matches,
     )
 
 
@@ -174,7 +184,6 @@ async def find_images_by_color(
     threshold = (
         payload.threshold if payload.threshold is not None else settings.color_match_threshold
     )
-    top_k = payload.top_k if payload.top_k is not None else settings.color_search_top_k
 
     metadata_rows = await asyncio.to_thread(
         supabase.list_completed_metadata,
@@ -187,7 +196,7 @@ async def find_images_by_color(
             query_color=payload.color_hex,
             candidates=candidates,
             threshold=threshold,
-            top_k=top_k,
+            top_k=len(candidates),
         )
     except SimilarityError as exc:
         raise HTTPException(
@@ -217,8 +226,18 @@ async def find_images_by_color(
             )
         )
 
+    total_count = len(matches)
+    total_pages = max(1, math.ceil(total_count / payload.limit))
+    start = (payload.page - 1) * payload.limit
+    end = start + payload.limit
+    paged_matches = matches[start:end]
+
     return ColorSearchResponse(
         query_color=payload.color_hex,
         match_threshold=threshold,
-        matches=matches,
+        page=payload.page,
+        limit=payload.limit,
+        total_count=total_count,
+        total_pages=total_pages,
+        matches=paged_matches,
     )

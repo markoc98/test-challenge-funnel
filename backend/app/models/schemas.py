@@ -16,6 +16,8 @@ class ProcessImageResponse(BaseModel):
 
 class SimilarImagesRequest(BaseModel):
     image_id: int
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class SimilarImageQueryMetadata(BaseModel):
@@ -47,13 +49,18 @@ class SimilarImageMatch(BaseModel):
 class SimilarImagesResponse(BaseModel):
     query: SimilarImageQueryMetadata
     match_threshold: float
+    page: int
+    limit: int
+    total_count: int
+    total_pages: int
     matches: list[SimilarImageMatch] = Field(default_factory=list)
 
 
 class ColorSearchRequest(BaseModel):
     color_hex: str = Field(min_length=7, max_length=7)
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
-    top_k: int | None = Field(default=None, ge=1, le=500)
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=20, ge=1, le=100)
 
     @field_validator("color_hex")
     @classmethod
@@ -81,4 +88,8 @@ class ColorSearchMatch(BaseModel):
 class ColorSearchResponse(BaseModel):
     query_color: str
     match_threshold: float
+    page: int
+    limit: int
+    total_count: int
+    total_pages: int
     matches: list[ColorSearchMatch] = Field(default_factory=list)

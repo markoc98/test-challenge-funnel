@@ -28,7 +28,19 @@ export type SimilarImageQuery = {
   description: string
 }
 
-export type SimilarImagesResponse = {
+export type PaginationParams = {
+  page?: number
+  limit?: number
+}
+
+export type PaginatedResponseMeta = {
+  page: number
+  limit: number
+  total_count: number
+  total_pages: number
+}
+
+export type SimilarImagesResponse = PaginatedResponseMeta & {
   query: SimilarImageQuery
   match_threshold: number
   matches: SimilarImageMatch[]
@@ -45,7 +57,7 @@ export type ColorSearchMatch = {
   description: string
 }
 
-export type ColorSearchResponse = {
+export type ColorSearchResponse = PaginatedResponseMeta & {
   query_color: string
   match_threshold: number
   matches: ColorSearchMatch[]
@@ -95,13 +107,26 @@ export async function processImage(imageId: number) {
   return postJson<{ message: string }>('/api/process-image', { image_id: imageId })
 }
 
-export async function findSimilarImages(imageId: number) {
-  return postJson<SimilarImagesResponse>('/api/images/similar', { image_id: imageId })
+export async function findSimilarImages(
+  imageId: number,
+  pagination: PaginationParams = {}
+) {
+  const { page = 1, limit = 20 } = pagination
+  return postJson<SimilarImagesResponse>('/api/images/similar', {
+    image_id: imageId,
+    page,
+    limit,
+  })
 }
 
-export async function findImagesByColor(colorHex: string, threshold?: number) {
+export async function findImagesByColor(
+  colorHex: string,
+  pagination: PaginationParams = {}
+) {
+  const { page = 1, limit = 20 } = pagination
   return postJson<ColorSearchResponse>('/api/images/by-color', {
     color_hex: colorHex,
-    threshold,
+    page,
+    limit,
   })
 }
