@@ -5,6 +5,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { toast } from 'sonner'
 
 import { AuthContext, type AuthContextValue } from '@/auth/auth-context'
 import { supabase } from '@/lib/client'
@@ -41,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     const { error } = await supabase.auth.signOut()
     if (error) {
-      console.error('Sign out failed:', error.message)
+      toast.error('Sign out failed. Please try again.')
     }
   }, [])
 

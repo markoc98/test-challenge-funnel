@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, Search, Upload, X } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { useAuth } from '@/auth/use-auth'
 import { GalleryCard } from '@/components/gallery-card'
@@ -72,9 +73,6 @@ async function createSignedThumbnailUrl(
     path: thumbnailPath,
     expiresIn: THUMBNAIL_URL_TTL_SECONDS,
   })
-  if (!signedUrl) {
-    console.error('Failed to sign thumbnail URL.')
-  }
   return signedUrl
 }
 
@@ -158,6 +156,7 @@ export function GalleryPage() {
   const [searchResults, setSearchResults] = useState<GalleryImage[]>([])
   const [isSearchLoading, setSearchLoading] = useState(false)
   const searchRequestIdRef = useRef(0)
+  const searchErrorToastAtRef = useRef(0)
 
   const { images, loading, page, setPage, totalPages, addImage } =
     useGalleryImages(userId)
@@ -190,6 +189,13 @@ export function GalleryPage() {
     setSearchQuery('')
     setSearchResults([])
     setSearchLoading(false)
+  }, [])
+
+  const notifySearchError = useCallback(() => {
+    const now = Date.now()
+    if (now - searchErrorToastAtRef.current < 2500) return
+    searchErrorToastAtRef.current = now
+    toast.error('Text search failed. Please try again.')
   }, [])
 
   useEffect(() => {
@@ -237,7 +243,7 @@ export function GalleryPage() {
           if (searchRequestIdRef.current !== requestId) return
 
           if (descriptionResult.error || tagsResult.error) {
-            console.error('Failed to run text search:', descriptionResult.error, tagsResult.error)
+            notifySearchError()
             setSearchResults([])
             return
           }
@@ -266,7 +272,7 @@ export function GalleryPage() {
           if (searchRequestIdRef.current !== requestId) return
 
           if (matchedImagesError) {
-            console.error('Failed to fetch text search matches:', matchedImagesError)
+            notifySearchError()
             setSearchResults([])
             return
           }
@@ -283,9 +289,9 @@ export function GalleryPage() {
           if (searchRequestIdRef.current !== requestId) return
 
           setSearchResults(resultsWithSignedThumbs)
-        } catch (error) {
+        } catch {
           if (searchRequestIdRef.current !== requestId) return
-          console.error('Failed to search images:', error)
+          notifySearchError()
           setSearchResults([])
         } finally {
           if (searchRequestIdRef.current === requestId) {
@@ -298,7 +304,7 @@ export function GalleryPage() {
     return () => {
       window.clearTimeout(timeoutId)
     }
-  }, [existingThumbUrlByImageId, searchInput, userId])
+  }, [existingThumbUrlByImageId, notifySearchError, searchInput, userId])
 
   const handleFileUploaded = useCallback(
     async (filename: string, storagePath: string) => {
@@ -314,19 +320,14 @@ export function GalleryPage() {
         .single()
 
       if (error || !data) {
-        console.error('Failed to insert image row:', error)
-        const { error: cleanupError } = await supabase.storage
-          .from(GALLERY_BUCKET)
-          .remove([storagePath])
-        if (cleanupError) {
-          console.error('Failed to cleanup orphaned storage object:', cleanupError)
-        }
+        toast.error('Failed to save uploaded image. Please retry.')
+        await supabase.storage.from(GALLERY_BUCKET).remove([storagePath])
         throw new Error(error?.message ?? 'Failed to create image record')
       }
 
       addImage({ ...data, image_metadata: [] })
-      void processImage(data.id).catch((processError) => {
-        console.error('Failed to process image:', processError)
+      void processImage(data.id).catch(() => {
+        toast.error('Image uploaded, but AI processing could not start.')
       })
 
     },
@@ -349,8 +350,8 @@ export function GalleryPage() {
           query: response.query,
           images: mappedImages,
         })
-      } catch (error) {
-        console.error('Failed to fetch similar images:', error)
+      } catch {
+        toast.error('Failed to find similar images. Please try again.')
       } finally {
         setSimilarLoadingImageId(null)
       }
@@ -377,8 +378,8 @@ export function GalleryPage() {
           matchThreshold: response.match_threshold,
           images: mappedImages,
         })
-      } catch (error) {
-        console.error('Failed to filter images by color:', error)
+      } catch {
+        toast.error('Failed to filter images by color. Please try again.')
       } finally {
         setColorFilterLoading(false)
         setColorLoadingHex(null)

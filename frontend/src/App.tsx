@@ -1,4 +1,5 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { Toaster } from 'sonner'
 
 import { AuthProvider } from '@/auth/auth-provider'
 import { AppLayout } from '@/components/app-layout'
@@ -25,6 +26,7 @@ function App() {
           <Route path="/" element={<AuthRedirect />} />
           <Route path="*" element={<AuthRedirect />} />
         </Routes>
+        <Toaster position="top-right" richColors />
       </AuthProvider>
     </BrowserRouter>
   )
