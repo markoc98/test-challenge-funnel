@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '@/lib/client'
+import { GALLERY_BUCKET, THUMBNAIL_URL_TTL_SECONDS } from '@/lib/gallery-constants'
 import { getSignedUrlCached } from '@/lib/signed-url-cache'
 import type { GalleryImage, ImageMetadataRow, ImageRow } from '@/types/gallery'
 
-const PAGE_SIZE = 20
-const THUMBNAIL_URL_TTL_SECONDS = 60 * 60
-const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
+export const GALLERY_PAGE_SIZE = 20
 
 async function createSignedThumbnailUrl(
   thumbnailPath: string | null
@@ -38,15 +37,15 @@ export function useGalleryImages(userId: string | undefined) {
   const [page, setPage] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
 
-  const totalPages = Math.ceil(totalCount / PAGE_SIZE)
+  const totalPages = Math.ceil(totalCount / GALLERY_PAGE_SIZE)
 
   const fetchImages = useCallback(async () => {
     if (!userId) return
 
     setLoading(true)
 
-    const from = (page - 1) * PAGE_SIZE
-    const to = from + PAGE_SIZE - 1
+    const from = (page - 1) * GALLERY_PAGE_SIZE
+    const to = from + GALLERY_PAGE_SIZE - 1
 
     const { data, count, error } = await supabase
       .from('images')
@@ -161,7 +160,7 @@ export function useGalleryImages(userId: string | undefined) {
   const addImage = useCallback(
     (image: GalleryImage) => {
       if (page === 1) {
-        setImages((prev) => [image, ...prev].slice(0, PAGE_SIZE))
+        setImages((prev) => [image, ...prev].slice(0, GALLERY_PAGE_SIZE))
       }
       setTotalCount((prev) => prev + 1)
     },
