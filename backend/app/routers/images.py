@@ -62,22 +62,6 @@ async def process_image(
             detail="Image not found.",
         )
 
-    try:
-        await asyncio.to_thread(
-            supabase.upsert_metadata,
-            image_id=payload.image_id,
-            user_id=user_id,
-            payload={
-                "ai_processing_status": "processing",
-                "error_message": None,
-            },
-        )
-    except SupabaseError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to set image processing state.",
-        ) from exc
-
     background_tasks.add_task(process_image_job, payload.image_id, user_id, image)
     return ProcessImageResponse(message="Image processing started.")
 
