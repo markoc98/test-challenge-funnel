@@ -1,5 +1,5 @@
 import { type MouseEvent, useEffect, useState } from 'react'
-import { Loader2, Search } from 'lucide-react'
+import { Loader2, RotateCcw, Search } from 'lucide-react'
 
 import {
   Sheet,
@@ -20,6 +20,7 @@ const GALLERY_BUCKET = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET ?? 'gallery'
 type GalleryCardProps = {
   image: GalleryImage
   onFindSimilar?: (image: GalleryImage) => void
+  onRetryProcessing?: (image: GalleryImage) => void
   onTagClick?: (tag: string) => void
   isFindingSimilar?: boolean
   onFilterByColor?: (colorHex: string) => void
@@ -30,6 +31,7 @@ type GalleryCardProps = {
 function GalleryCard({
   image,
   onFindSimilar,
+  onRetryProcessing,
   onTagClick,
   isFindingSimilar = false,
   onFilterByColor,
@@ -41,9 +43,12 @@ function GalleryCard({
   const [isOriginalLoading, setOriginalLoading] = useState(false)
 
   const metadata = image.image_metadata[0] ?? null
-  const isProcessing = !metadata || metadata.ai_processing_status !== 'completed'
-  const canFindSimilar = Boolean(onFindSimilar && !isProcessing)
-  const canFilterByColor = Boolean(onFilterByColor && !isProcessing)
+  const processingStatus = metadata?.ai_processing_status?.toLowerCase() ?? 'processing'
+  const isCompleted = processingStatus === 'completed'
+  const isFailed = processingStatus === 'failed'
+  const isProcessing = !isCompleted && !isFailed
+  const canFindSimilar = Boolean(onFindSimilar && isCompleted)
+  const canFilterByColor = Boolean(onFilterByColor && isCompleted)
   const normalizedActiveColor = activeColorHex?.toUpperCase() ?? null
   const thumbnailUrl = image.thumbUrl ?? null
   const previewTags = metadata?.tags ?? []
@@ -73,6 +78,13 @@ function GalleryCard({
     if (!onTagClick) return
     setDetailOpen(false)
     onTagClick(tag)
+  }
+
+  const handleRetryClick = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!onRetryProcessing || !isFailed) return
+    onRetryProcessing(image)
   }
 
   useEffect(() => {
@@ -129,14 +141,25 @@ function GalleryCard({
           </div>
 
           <div className="flex min-h-44 flex-col gap-2 p-3">
-            <p className="truncate text-sm font-medium leading-5">
-              {image.filename ?? 'Untitled'}
-            </p>
-
             {isProcessing ? (
               <div className="space-y-1.5">
                 <Skeleton className="h-3 w-full" />
                 <Skeleton className="h-3 w-2/3" />
+              </div>
+            ) : isFailed ? (
+              <div className="mt-auto pt-1">
+                {onRetryProcessing && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="h-8 w-full gap-1.5 transition-all hover:ring-1 hover:ring-primary/40"
+                    onClick={handleRetryClick}
+                  >
+                    <RotateCcw className="size-3.5" />
+                    Retry processing
+                  </Button>
+                )}
               </div>
             ) : (
               <>
@@ -240,9 +263,28 @@ function GalleryCard({
 
             <div className="rounded-lg border p-3">
               <p className="text-xs text-muted-foreground">Status</p>
-              <p className="text-sm font-medium">
-                {metadata?.ai_processing_status ?? 'processing'}
-              </p>
+              <p className="text-sm font-medium capitalize">{processingStatus}</p>
+              {isProcessing && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  AI analysis is running in the background.
+                </p>
+              )}
+              {isFailed && (
+                <>
+                  {onRetryProcessing && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => onRetryProcessing(image)}
+                      className="mt-2 w-full gap-1.5 transition-all hover:ring-1 hover:ring-primary/40"
+                    >
+                      <RotateCcw className="size-4" />
+                      Retry processing
+                    </Button>
+                  )}
+                </>
+              )}
             </div>
 
             <div className="rounded-lg border p-3">

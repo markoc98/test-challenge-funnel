@@ -142,6 +142,28 @@ function toTagSearchTerms(query: string): string[] {
   )
 }
 
+function setImageStatusInList(
+  list: GalleryImage[],
+  imageId: number,
+  status: 'processing' | 'failed'
+): GalleryImage[] {
+  return list.map((item) => {
+    if (item.id !== imageId || item.image_metadata.length === 0) return item
+    const [currentMeta, ...restMeta] = item.image_metadata
+    return {
+      ...item,
+      image_metadata: [
+        {
+          ...currentMeta,
+          ai_processing_status: status,
+          error_message: status === 'processing' ? null : currentMeta.error_message,
+        },
+        ...restMeta,
+      ],
+    }
+  })
+}
+
 export function GalleryPage() {
   const { user } = useAuth()
   const userId = user!.id
@@ -158,7 +180,15 @@ export function GalleryPage() {
   const searchRequestIdRef = useRef(0)
   const searchErrorToastAtRef = useRef(0)
 
-  const { images, loading, page, setPage, totalPages, addImage } =
+  const {
+    images,
+    loading,
+    page,
+    setPage,
+    totalPages,
+    addImage,
+    setImageProcessingStatus,
+  } =
     useGalleryImages(userId)
   const isTextSearchActive = searchQuery.length > 0
   const isSimilarFilterActive = similarFilter !== null
@@ -359,6 +389,29 @@ export function GalleryPage() {
     [clearTextSearch, existingThumbUrlByImageId, userId]
   )
 
+  const handleRetryProcessing = useCallback(async (image: GalleryImage) => {
+    setImageProcessingStatus(image.id, 'processing')
+    setSearchResults((prev) => setImageStatusInList(prev, image.id, 'processing'))
+    setSimilarFilter((prev) =>
+      prev ? { ...prev, images: setImageStatusInList(prev.images, image.id, 'processing') } : prev
+    )
+    setColorFilter((prev) =>
+      prev ? { ...prev, images: setImageStatusInList(prev.images, image.id, 'processing') } : prev
+    )
+    try {
+      await processImage(image.id)
+    } catch {
+      setImageProcessingStatus(image.id, 'failed')
+      setSearchResults((prev) => setImageStatusInList(prev, image.id, 'failed'))
+      setSimilarFilter((prev) =>
+        prev ? { ...prev, images: setImageStatusInList(prev.images, image.id, 'failed') } : prev
+      )
+      setColorFilter((prev) =>
+        prev ? { ...prev, images: setImageStatusInList(prev.images, image.id, 'failed') } : prev
+      )
+    }
+  }, [setImageProcessingStatus])
+
   const handleFilterByColor = useCallback(
     async (colorHex: string) => {
       const normalizedColor = colorHex.toUpperCase()
@@ -420,7 +473,6 @@ export function GalleryPage() {
     <section className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">Gallery</h1>
           <p className="text-sm text-muted-foreground">
             Upload, review, and search your AI-tagged images.
           </p>
@@ -559,6 +611,7 @@ export function GalleryPage() {
               key={image.id}
               image={image}
               onFindSimilar={handleFindSimilar}
+              onRetryProcessing={handleRetryProcessing}
               onTagClick={handleTagClick}
               isFindingSimilar={similarLoadingImageId === image.id}
               onFilterByColor={handleFilterByColor}

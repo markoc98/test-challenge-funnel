@@ -18,7 +18,7 @@ from app.models.schemas import (
 from app.processing.pipeline import process_image_job
 from app.services.auth import UserId
 from app.services.similarity import SimilarityError, SimilarityService, get_similarity_service
-from app.services.supabase_service import SupabaseService, get_supabase_service
+from app.services.supabase_service import SupabaseError, SupabaseService, get_supabase_service
 
 router = APIRouter(prefix="/api", tags=["images"])
 
@@ -61,9 +61,24 @@ async def process_image(
             detail="Image not found.",
         )
 
-    background_tasks.add_task(process_image_job, payload.image_id, user_id, image)
+    try:
+        await asyncio.to_thread(
+            supabase.upsert_metadata,
+            image_id=payload.image_id,
+            user_id=user_id,
+            payload={
+                "ai_processing_status": "processing",
+                "error_message": None,
+            },
+        )
+    except SupabaseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to set image processing state.",
+        ) from exc
 
-    return ProcessImageResponse(message="All good.")
+    background_tasks.add_task(process_image_job, payload.image_id, user_id, image)
+    return ProcessImageResponse(message="Image processing started.")
 
 
 @router.post("/images/similar", response_model=SimilarImagesResponse)

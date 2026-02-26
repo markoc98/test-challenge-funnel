@@ -168,6 +168,29 @@ export function useGalleryImages(userId: string | undefined) {
     [page]
   )
 
+  const setImageProcessingStatus = useCallback(
+    (imageId: number, status: 'processing' | 'failed') => {
+      setImages((prev) =>
+        prev.map((img) => {
+          if (img.id !== imageId || img.image_metadata.length === 0) return img
+          const [currentMeta, ...restMeta] = img.image_metadata
+          return {
+            ...img,
+            image_metadata: [
+              {
+                ...currentMeta,
+                ai_processing_status: status,
+                error_message: status === 'processing' ? null : currentMeta.error_message,
+              },
+              ...restMeta,
+            ],
+          }
+        })
+      )
+    },
+    []
+  )
+
   return {
     images,
     loading,
@@ -176,6 +199,7 @@ export function useGalleryImages(userId: string | undefined) {
     totalPages,
     totalCount,
     addImage,
+    setImageProcessingStatus,
     refetch: fetchImages,
   }
 }
