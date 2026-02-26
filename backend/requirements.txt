@@ -1,6 +1,6 @@
 fastapi==0.115.6
 httpx==0.28.1
-openai==1.59.7
+openai==2.24.0
 pillow==11.0.0
 pydantic==2.12.5
 pydantic-settings==2.7.0
