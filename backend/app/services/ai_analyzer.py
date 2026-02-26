@@ -28,6 +28,32 @@ def _is_retryable_url_download_error(error_text: str) -> bool:
     )
 
 
+_ANALYSIS_SCHEMA = {
+    "type": "json_schema",
+    "name": "image_analysis",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "description": {"type": "string"},
+        },
+        "required": ["tags", "description"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+_PROMPT = (
+    "Analyze this image. "
+    "Return 5-10 concise lowercase tags — include both specific and general tags where relevant "
+    '(e.g. both "golden retriever" and "dog"). No hashtags, no punctuation in tags. '
+    "Description must be one sentence, max 25 words, starting with a capital letter."
+)
+
+
 class OpenAIImageAnalyzer:
     def __init__(self, api_key: str, model: str, timeout_seconds: int) -> None:
         self._client = AsyncOpenAI(
@@ -38,23 +64,17 @@ class OpenAIImageAnalyzer:
         self._model = model
 
     async def analyze(self, image_url: str) -> ImageAnalysis:
-        prompt = (
-            "Analyze this image and return only valid JSON with this exact schema: "
-            '{"tags": ["tag-one", "tag-two"], "description": "One-sentence description."}. '
-            'Rules: 5-10 concise lowercase tags, include both specific and general tags where relevant (e.g. both "golden retriever" and "dog"), no hashtags, no punctuation in tags, '
-            "description max 25 words."
-        )
-
         try:
             response = await self._client.responses.create(
                 model=self._model,
                 temperature=0.2,
                 max_output_tokens=300,
+                text={"format": _ANALYSIS_SCHEMA},
                 input=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "input_text", "text": prompt},
+                            {"type": "input_text", "text": _PROMPT},
                             {"type": "input_image", "image_url": image_url},
                         ],
                     }
@@ -67,38 +87,18 @@ class OpenAIImageAnalyzer:
                     retryable_url_error=True,
                 ) from exc
             raise AnalyzerError("OpenAI request failed.") from exc
-        output_text = (response.output_text or "").strip()
-        if not output_text:
-            raise AnalyzerError("OpenAI returned an empty response.")
 
-        try:
-            parsed = _parse_json_output(output_text)
-        except json.JSONDecodeError as exc:
-            raise AnalyzerError("OpenAI returned non-JSON output.") from exc
+        parsed = json.loads(response.output_text)
+        tags = parsed["tags"]
+        description = parsed["description"]
 
-        if not isinstance(parsed, dict):
-            raise AnalyzerError("OpenAI response was not a JSON object.")
-
-        tags = parsed.get("tags", [])
-        description = parsed.get("description", "")
-
-        if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
-            raise AnalyzerError("Invalid tags in OpenAI response.")
-        if not isinstance(description, str) or not description.strip():
-            raise AnalyzerError("Invalid description in OpenAI response.")
+        # Semantic validation — schema guarantees structure, not content quality
+        if not description.strip():
+            raise AnalyzerError("OpenAI returned an empty description.")
 
         clean_tags = [tag.strip().lower() for tag in tags if tag.strip()]
         deduped_tags = list(dict.fromkeys(clean_tags))
-
         return ImageAnalysis(tags=deduped_tags[:10], description=description.strip())
-
-
-def _parse_json_output(text: str) -> dict:
-    normalized = text.strip()
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", normalized, flags=re.DOTALL)
-    if fenced:
-        normalized = fenced.group(1).strip()
-    return json.loads(normalized)
 
 
 @lru_cache
